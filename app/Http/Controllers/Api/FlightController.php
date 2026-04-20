@@ -134,7 +134,7 @@ class FlightController extends Controller
                 'tag' => ""
                 // 'tag' => $validatedData['tag'] ?? ""
             ];
-            // 
+            //
 
             // 3. Call PKfareService to precise pricing
             $precisePricing = $this->pkfareService->getPrecisePricing($criteria);
