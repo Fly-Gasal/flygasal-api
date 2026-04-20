@@ -43,7 +43,7 @@ class UserController extends Controller
             $validatedData = $request->validate([
                 'name' => 'required|string|max:255',
                 'email' => 'required|string|email|max:255|unique:users,email',
-                'phone' => 'nullable|string|max:16|unique:users,phone_number',
+                'phone' => 'nullable|string|max:20|unique:users,phone_number',
                 'password' => 'required|string|min:8',
                 'type' => 'nullable|string|in:admin,agent,client,user', // Added client
                 'walletBalance' => 'nullable|numeric|min:0', 
