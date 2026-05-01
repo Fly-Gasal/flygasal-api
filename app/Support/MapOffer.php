@@ -2,40 +2,44 @@
 
 namespace App\Support;
 
+/**
+ * Transforms the highly nested and supplier-specific PKFare shopping response
+ * into a clean, normalized format suitable for frontend consumption.
+ */
 final class MapOffer
 {
     /**
      * Normalize PKFare "data" payload to UI-ready offers.
-     * @param array $payload
-     * @return array<int,array<string,mixed>>
+     *
+     * @param array $payload The raw 'data' node from the PKFare response.
+     * @return array<int, array<string, mixed>> An array of normalized flight offers.
      */
     public static function normalize(array $payload): array
     {
-        // Index segments by id
+        // 1. Create fast-lookup dictionaries for segments and flights
         $segmentsById = [];
-        foreach (($payload['segments'] ?? []) as $s) {
-            if (!empty($s['segmentId'])) {
-                $segmentsById[$s['segmentId']] = $s;
+        foreach (($payload['segments'] ?? []) as $segment) {
+            if (!empty($segment['segmentId'])) {
+                $segmentsById[$segment['segmentId']] = $segment;
             }
         }
 
-        // Index flights by id
         $flightsById = [];
-        foreach (($payload['flights'] ?? []) as $f) {
-            if (!empty($f['flightId'])) {
-                $flightsById[$f['flightId']] = $f;
+        foreach (($payload['flights'] ?? []) as $flight) {
+            if (!empty($flight['flightId'])) {
+                $flightsById[$flight['flightId']] = $flight;
             }
         }
 
         $solutions = $payload['solutions'] ?? [];
-        if (!$solutions) {
+        if (empty($solutions)) {
             return [];
         }
 
-        $out = [];
+        $normalizedOffers = [];
 
         foreach ($solutions as $sol) {
-            // Passengers
+            // --- PASSENGER COUNTS ---
             $passengers = [
                 'adults'   => (int)($sol['adults'] ?? 1),
                 'children' => (int)($sol['children'] ?? 0),
@@ -43,86 +47,83 @@ final class MapOffer
             ];
             $passengers['total'] = $passengers['adults'] + $passengers['children'] + $passengers['infants'];
 
-            // Journeys -> legs (preserve order: journey_0, journey_1, ...)
+            // --- JOURNEYS (Legs: e.g., Outbound, Return) ---
             $journeys = $sol['journeys'] ?? [];
-            if (!$journeys || !is_array($journeys)) {
+            if (empty($journeys) || !is_array($journeys)) {
                 continue;
             }
-            uksort($journeys, static fn($a,$b) => strnatcmp((string)$a,(string)$b));
+
+            // Ensure journey_0, journey_1 are processed in correct chronological order
+            uksort($journeys, fn($a, $b) => strnatcmp((string)$a, (string)$b));
 
             $legs = [];
             $globalSegList = [];
-            $globalIdxToSegId = []; // 1-based across all legs
+            $globalIdxToSegId = []; // Maps PKFare's 1-based index to our segment IDs
             $marketingCarriersSet = [];
             $operatingCarriersSet = [];
             $flightIdsAll = [];
             $lastTktCandidates = [];
 
-            foreach ($journeys as $jKey => $flightIdsOfJourney) {
+            foreach ($journeys as $journeyKey => $flightIdsOfJourney) {
                 $legFlightIds = array_values(array_filter((array)$flightIdsOfJourney));
-                if (!$legFlightIds) continue;
+                if (empty($legFlightIds)) continue;
 
                 $legSegments = [];
 
-                foreach ($legFlightIds as $fid) {
-                    $flight = $flightsById[$fid] ?? null;
+                foreach ($legFlightIds as $flightId) {
+                    $flight = $flightsById[$flightId] ?? null;
                     if (!$flight) continue;
 
-                    $flightIdsAll[] = $fid;
+                    $flightIdsAll[] = $flightId;
 
+                    // Track the earliest required ticketing time
                     if (!empty($flight['lastTktTime'])) {
-                        $iso = self::parseDateFlex($flight['lastTktTime']);
-                        if ($iso) $lastTktCandidates[] = $iso;
+                        $isoTime = self::parseDateFlex($flight['lastTktTime']);
+                        if ($isoTime) $lastTktCandidates[] = $isoTime;
                     }
 
-                    // NOTE: supplier field is "segmengtIds" (typo preserved)
-                    $segIds = $flight['segmengtIds'] ?? [];
-                    foreach ((array)$segIds as $sid) {
-                        if (!isset($segmentsById[$sid])) continue;
-                        $seg = $segmentsById[$sid];
+                    // NOTE: PKFare misspells this as "segmengtIds". We must preserve their typo to read the data.
+                    $segmentIds = $flight['segmengtIds'] ?? [];
 
-                        // Collect carriers
+                    foreach ((array)$segmentIds as $segmentId) {
+                        if (!isset($segmentsById[$segmentId])) continue;
+                        $seg = $segmentsById[$segmentId];
+
+                        // Collect unique carriers for UI filtering
                         if (!empty($seg['airline'])) {
                             $marketingCarriersSet[$seg['airline']] = true;
                         }
-                        $op = trim((string)($seg['opFltAirline'] ?? ''));
-                        if ($op !== '') {
-                            $operatingCarriersSet[$op] = true;
+                        $operatingCarrier = trim((string)($seg['opFltAirline'] ?? ''));
+                        if ($operatingCarrier !== '') {
+                            $operatingCarriersSet[$operatingCarrier] = true;
                         }
 
-                        // Attach flightId & ISO helpers (preserve raw)
-                        $segWith = self::withIsoTimes($seg + ['flightId' => $fid]);
+                        // Enrich segment with standardized dates and tracking tags
+                        $enrichedSegment = self::withIsoTimes($seg + ['flightId' => $flightId]);
+                        $enrichedSegment['journeyKey'] = $journeyKey;
+                        $enrichedSegment['legIndex']   = count($legs);
 
-                        // Tag with authoritative journey metadata
-                        $segWith['journeyKey'] = $jKey;         // e.g. "journey_0"
-                        $segWith['legIndex']   = count($legs);  // 0-based index for the leg being built
+                        $legSegments[] = $enrichedSegment;
 
-                        $legSegments[] = $segWith;
-
-                        // Global 1-based index mapping
-                        $globalIdxToSegId[count($globalSegList) + 1] = $sid;
-                        $globalSegList[] = $sid;
+                        // PKFare maps baggage and rules using a global 1-based index across ALL segments.
+                        // We build a map here to translate "Segment 1" to the actual UUID.
+                        $globalIdxToSegId[count($globalSegList) + 1] = $segmentId;
+                        $globalSegList[] = $segmentId;
                     }
                 }
 
-                if (!$legSegments) continue;
+                if (empty($legSegments)) continue;
 
-                // Defensively keep time order
-                usort($legSegments, static function (array $a, array $b): int {
-                    $ta = is_numeric($a['departureDate'] ?? null) ? (int)$a['departureDate'] : 0;
-                    $tb = is_numeric($b['departureDate'] ?? null) ? (int)$b['departureDate'] : 0;
-                    return $ta <=> $tb;
-                });
+                // Defensively sort segments by departure time to ensure logical order
+                usort($legSegments, fn(array $a, array $b): int =>
+                    (int)($a['departureDate'] ?? 0) <=> (int)($b['departureDate'] ?? 0)
+                );
 
                 $firstSeg = $legSegments[0];
                 $lastSeg  = $legSegments[count($legSegments) - 1];
-
                 $firstFlight  = $flightsById[$legFlightIds[0]] ?? null;
-                $journeyTime  = $firstFlight['journeyTime']   ?? null;
-                $transferCnt  = $firstFlight['transferCount'] ?? max(count($legSegments) - 1, 0);
-                $stops        = max(count($legSegments) - 1, 0);
 
-                // Per-leg 1-based index map
+                // Build a 1-based index map specific to this leg
                 $legIdxToSegId = [];
                 foreach ($legSegments as $i => $s) {
                     $legIdxToSegId[$i + 1] = $s['segmentId'];
@@ -130,14 +131,14 @@ final class MapOffer
 
                 $legs[] = [
                     'flightIds'     => $legFlightIds,
-                    'segments'      => $legSegments, // full objects (with flightId, iso helpers, journey tags)
+                    'segments'      => $legSegments,
                     'origin'        => $firstSeg['departure'] ?? null,
                     'destination'   => $lastSeg['arrival'] ?? null,
-                    'departureTime' => self::dtMs($firstSeg['departureDate'] ?? null),
-                    'arrivalTime'   => self::dtMs($lastSeg['arrivalDate'] ?? null),
-                    'journeyTime'   => $journeyTime,
-                    'transferCount' => $transferCnt,
-                    'stops'         => $stops,
+                    'departureTime' => self::formatEpochToIso($firstSeg['departureDate'] ?? null),
+                    'arrivalTime'   => self::formatEpochToIso($lastSeg['arrivalDate'] ?? null),
+                    'journeyTime'   => $firstFlight['journeyTime'] ?? null,
+                    'transferCount' => $firstFlight['transferCount'] ?? max(count($legSegments) - 1, 0),
+                    'stops'         => max(count($legSegments) - 1, 0),
                     'terminals'     => [
                         'from' => $firstSeg['departureTerminal'] ?? null,
                         'to'   => $lastSeg['arrivalTerminal'] ?? null,
@@ -146,9 +147,9 @@ final class MapOffer
                 ];
             }
 
-            if (!$legs) continue;
+            if (empty($legs)) continue;
 
-            // Map baggage/rules using GLOBAL indices
+            // --- BAGGAGE & RULES MAPPING ---
             [$adtChecked, $adtCarry] = self::mapBaggageByGlobalIndex(
                 $sol['baggageMap']['ADT'] ?? [],
                 $globalIdxToSegId
@@ -159,16 +160,18 @@ final class MapOffer
                 $globalIdxToSegId
             );
 
-            // Pricing (multi-PTC)
+            // --- PRICING ---
             $currency   = $sol['currency'] ?? 'USD';
             $priceBreak = self::buildPriceBreakdown($sol, $passengers, $currency);
 
+            // --- METADATA & IDENTIFIERS ---
             $supplier    = $payload['supplier']    ?? ($sol['supplier'] ?? null);
             $solutionId  = $sol['solutionId']      ?? null;
             $solutionKey = $sol['solutionKey']     ?? null;
             $shoppingKey = $payload['shoppingKey'] ?? null;
             $plating     = $sol['platingCarrier']  ?? null;
 
+            // Generate a coherence key to validate state during precise pricing
             $coherenceKey = implode('|', [
                 $solutionId ?: 'NA',
                 $solutionKey ?: 'NAKEY',
@@ -178,11 +181,10 @@ final class MapOffer
                 $shoppingKey ?: 'SHOP',
             ]);
 
-            // Carriers (unique, compact)
             $marketing = array_values(array_keys($marketingCarriersSet));
             $operating = array_values(array_filter(array_keys($operatingCarriersSet)));
 
-            // Safer top-level id
+            // Generate an internal Unique ID for this specific offer
             $head = $legs[0];
             $firstSegForId = $head['segments'][0] ?? null;
             $offerId = implode('|', [
@@ -192,210 +194,177 @@ final class MapOffer
                 $head['departureTime'] ?? '',
             ]);
 
-            // Last ticketing: earliest across all used flights
+            // Determine if the offer has expired based on last ticketing time
             $lastTktIso = null;
             if (!empty($lastTktCandidates)) {
                 sort($lastTktCandidates);
-                $lastTktIso = $lastTktCandidates[0];
+                $lastTktIso = $lastTktCandidates[0]; // Earliest time wins
             }
             $expired = $lastTktIso ? (strtotime($lastTktIso) < time()) : false;
 
-            // ---- Stops convenience at offer root (keeps leg stops as-is) ----
-            $stopsByLeg = array_map(static fn(array $l): int => max(0, (int)($l['stops'] ?? 0)), $legs);
+            // Calculate total stops across all bounds
+            $stopsByLeg = array_map(fn(array $l): int => max(0, (int)($l['stops'] ?? 0)), $legs);
             $totalStops = array_sum($stopsByLeg);
             $outboundStops = $stopsByLeg[0] ?? null;
             $returnStops = $stopsByLeg[1] ?? null;
 
-            // For single-leg (oneway) offers, expose stops at root for UI convenience.
-            // For multi-leg, leave root 'stops' null to avoid ambiguity; use totalStops/stopsByLeg instead.
-            $rootStops = (count($legs) === 1) ? ($outboundStops ?? 0) : null;
-
-            // Build flat, ordered segments directly from the coherent legs
+            // Flatten segments for easy UI rendering (e.g., standard flight timeline)
             $flatSegments = [];
-            $seen = [];
+            $seenSegments = [];
             foreach ($legs as $leg) {
                 foreach ($leg['segments'] as $segObj) {
                     $sid = $segObj['segmentId'] ?? null;
-                    if ($sid && isset($seen[$sid])) continue;
-                    if ($sid) $seen[$sid] = true;
+                    if ($sid && isset($seenSegments[$sid])) continue;
+                    if ($sid) $seenSegments[$sid] = true;
                     $flatSegments[] = $segObj;
                 }
             }
 
-            $out[] = [
-                'id'             => $offerId,
-                'solutionKey'    => $solutionKey,
-                'solutionId'     => $solutionId,
-                'shoppingKey'    => $shoppingKey,
-                'supplier'       => $supplier,
-                'coherenceKey'   => $coherenceKey,
-
+            // --- ASSEMBLE FINAL OFFER ---
+            $normalizedOffers[] = [
+                'id'                => $offerId,
+                'solutionKey'       => $solutionKey,
+                'solutionId'        => $solutionId,
+                'shoppingKey'       => $shoppingKey,
+                'supplier'          => $supplier,
+                'coherenceKey'      => $coherenceKey,
                 'platingCarrier'    => $plating,
                 'marketingCarriers' => $marketing,
                 'operatingCarriers' => $operating,
-
-                'origin'        => $head['origin'],
-                'destination'   => $head['destination'],
-
+                'origin'            => $head['origin'],
+                'destination'       => $head['destination'],
                 'summary' => [
-                    'legs' => array_map(static function (array $leg) use ($coherenceKey): array {
+                    'legs' => array_map(function (array $leg) use ($coherenceKey): array {
                         $leg['coherenceKey'] = $coherenceKey;
                         return $leg;
                     }, $legs),
                     'globalIdxToSegId' => $globalIdxToSegId,
                 ],
-
-                'passengers' => $passengers,
-
+                'passengers'     => $passengers,
                 'priceBreakdown' => $priceBreak,
-
                 'baggage' => [
                     'adt' => [
                         'checkedBySegment' => $adtChecked,
                         'carryOnBySegment' => $adtCarry,
                     ],
                 ],
-
-                'rules' => ['adt' => $rulesADT],
-
-                'flightIds' => array_values(array_unique($flightIdsAll)),
-
-                // Full ordered segments across ALL legs (with flightId, iso helpers, and journey tags)
-                'segments' => $flatSegments,
-
-                'journeyTime'   => $journeyTime ?? null,
-                'lastTktTime' => $lastTktIso,
-                'expired'     => $expired,
-                'stops'        => $rootStops,      // only set for single-leg offers
-                'totalStops'   => $totalStops,     // sum across all legs
-                'stopsByLeg'   => $stopsByLeg,     // indexed in journey order
-                'outboundStops'=> $outboundStops,  // leg 0 if exists
-                'returnStops'  => $returnStops,    // leg 1 if exists
+                'rules'          => ['adt' => $rulesADT],
+                'flightIds'      => array_values(array_unique($flightIdsAll)),
+                'segments'       => $flatSegments,
+                'journeyTime'    => $firstFlight['journeyTime'] ?? null,
+                'lastTktTime'    => $lastTktIso,
+                'expired'        => $expired,
+                'stops'          => (count($legs) === 1) ? ($outboundStops ?? 0) : null,
+                'totalStops'     => $totalStops,
+                'stopsByLeg'     => $stopsByLeg,
+                'outboundStops'  => $outboundStops,
+                'returnStops'    => $returnStops,
             ];
         }
 
-        return $out;
+        return $normalizedOffers;
     }
 
     // ---------------------------------------------------------------------
-    // Pricing helpers
+    // PRICING HELPERS
     // ---------------------------------------------------------------------
 
+    /**
+     * Calculates the exact price breakdown per passenger type and overall totals.
+     */
     private static function buildPriceBreakdown(array $sol, array $pax, string $currency): array
     {
-        // Per-PTC unit fares/taxes
-        $unit = [
+        $unitFares = [
             'ADT' => [
-                'fare' => self::num($sol['adtFare'] ?? 0),
-                'tax'  => self::num($sol['adtTax']  ?? 0),
-                'count'=> (int)($pax['adults'] ?? 0),
+                'fare'  => self::toFloat($sol['adtFare'] ?? 0),
+                'tax'   => self::toFloat($sol['adtTax']  ?? 0),
+                'count' => (int)($pax['adults'] ?? 0),
             ],
             'CHD' => [
-                'fare' => self::num($sol['chdFare'] ?? 0),
-                'tax'  => self::num($sol['chdTax']  ?? 0),
-                'count'=> (int)($pax['children'] ?? 0),
+                'fare'  => self::toFloat($sol['chdFare'] ?? 0),
+                'tax'   => self::toFloat($sol['chdTax']  ?? 0),
+                'count' => (int)($pax['children'] ?? 0),
             ],
             'INF' => [
-                // be defensive about field naming across suppliers
-                'fare' => self::num($sol['infFare'] ?? $sol['infantFare'] ?? 0),
-                'tax'  => self::num($sol['infTax']  ?? $sol['infantTax']  ?? 0),
-                'count'=> (int)($pax['infants'] ?? 0),
+                'fare'  => self::toFloat($sol['infFare'] ?? $sol['infantFare'] ?? 0),
+                'tax'   => self::toFloat($sol['infTax']  ?? $sol['infantTax']  ?? 0),
+                'count' => (int)($pax['infants'] ?? 0),
             ],
         ];
 
-        // Extended subtotals
-        $ptc = [];
-        $sumBase = 0.0; $sumTax = 0.0;
+        $passengerTotals = [];
+        $sumBase = 0.0;
+        $sumTax = 0.0;
 
-        foreach ($unit as $code => $row) {
-            $fare   = $row['fare'];
-            $tax    = $row['tax'];
-            $count  = max(0, (int)$row['count']);
+        foreach ($unitFares as $typeCode => $row) {
+            $count = max(0, $row['count']);
+            $fare  = $row['fare'];
+            $tax   = $row['tax'];
 
-            $totalPerPax = $fare + $tax;
-            $baseSub     = $fare * $count;
-            $taxSub      = $tax  * $count;
-            $subTotal    = $baseSub + $taxSub;
+            $baseSubtotal = $fare * $count;
+            $taxSubtotal  = $tax  * $count;
 
-            $sumBase += $baseSub;
-            $sumTax  += $taxSub;
+            $sumBase += $baseSubtotal;
+            $sumTax  += $taxSubtotal;
 
-            $ptc[$code] = [
-                'count'        => $count,
-                'unit'         => [
-                    'fare'  => self::rnd($fare),
-                    'tax'   => self::rnd($tax),
-                    'total' => self::rnd($totalPerPax),
+            $passengerTotals[$typeCode] = [
+                'count'    => $count,
+                'unit'     => [
+                    'fare'  => self::round($fare),
+                    'tax'   => self::round($tax),
+                    'total' => self::round($fare + $tax),
                 ],
-                'subtotal'     => [
-                    'base'  => self::rnd($baseSub),
-                    'taxes' => self::rnd($taxSub),
-                    'total' => self::rnd($subTotal),
+                'subtotal' => [
+                    'base'  => self::round($baseSubtotal),
+                    'taxes' => self::round($taxSubtotal),
+                    'total' => self::round($baseSubtotal + $taxSubtotal),
                 ],
             ];
         }
 
-        // Solution-level fees (one-off for the whole cart/solution)
         $fees = [
-            'qCharge'            => self::num($sol['qCharge']            ?? 0),
-            'tktFee'             => self::num($sol['tktFee']             ?? 0),
-            'platformServiceFee' => self::num($sol['platformServiceFee'] ?? 0),
-            'merchantFee'        => self::num($sol['merchantFee']        ?? 0),
+            'qCharge'            => self::toFloat($sol['qCharge'] ?? 0),
+            'tktFee'             => self::toFloat($sol['tktFee'] ?? 0),
+            'platformServiceFee' => self::toFloat($sol['platformServiceFee'] ?? 0),
+            'merchantFee'        => self::toFloat($sol['merchantFee'] ?? 0),
         ];
+
         $sumFees = array_sum($fees);
-
-        // Grand totals
-        $grandBase  = $sumBase;
-        $grandTax   = $sumTax;
-        $grandTotal = $grandBase + $grandTax + $sumFees;
-
-        // If supplier exposes a rich 'prices' node in the future, pass it through raw for auditing.
-        $pricesRaw = $sol['prices'] ?? null;
+        $grandTotal = $sumBase + $sumTax + $sumFees;
 
         return [
-            'currency' => $currency,
-
-            // Per PTC section (ADT / CHD / INF)
-            'perPassenger' => $ptc,
-
-            // Solution-level fees (not per-pax)
+            'currency'     => $currency,
+            'perPassenger' => $passengerTotals,
             'fees' => [
-                'items' => array_map([self::class, 'rnd'], $fees),
-                'total' => self::rnd($sumFees),
+                'items' => array_map([self::class, 'round'], $fees),
+                'total' => self::round($sumFees),
             ],
-
-            // Totals (all passengers + fees)
             'totals' => [
-                'base'   => self::rnd($grandBase),
-                'taxes'  => self::rnd($grandTax),
-                'fees'   => self::rnd($sumFees),
-                'grand'  => self::rnd($grandTotal),
+                'base'  => self::round($sumBase),
+                'taxes' => self::round($sumTax),
+                'fees'  => self::round($sumFees),
+                'grand' => self::round($grandTotal),
             ],
-
-            // Keep raw source if present (null otherwise) for audit/debug
             'source' => [
-                'pricesRaw' => $pricesRaw,
+                'pricesRaw' => $sol['prices'] ?? null,
             ],
         ];
     }
 
     // ---------------------------------------------------------------------
-    // Other helpers
+    // UTILITY HELPERS
     // ---------------------------------------------------------------------
 
-    /** Convert epoch ms to ISO-8601 if present. */
-    private static function dtMs($ms): ?string
+    /** Converts epoch ms to ISO-8601. */
+    private static function formatEpochToIso(int|float|string|null $ms): ?string
     {
         return is_numeric($ms) ? date(DATE_ATOM, ((int)$ms) / 1000) : null;
     }
 
-    /**
-     * Parse a value that might be epoch ms or "YYYY-mm-dd HH:ii:ss".
-     * Returns ISO-8601 or null.
-     */
-    private static function parseDateFlex($value): ?string
+    /** Parses mixed date formats (epoch ms or string) into ISO-8601. */
+    private static function parseDateFlex(int|float|string|null $value): ?string
     {
-        if ($value === null || $value === '') return null;
+        if (empty($value)) return null;
         if (is_numeric($value)) {
             return date(DATE_ATOM, ((int)$value) / 1000);
         }
@@ -403,54 +372,53 @@ final class MapOffer
         return $ts ? date(DATE_ATOM, $ts) : null;
     }
 
-    /** Cast numeric-like to float safely. */
-    private static function num($v): float
+    /** Safely casts mixed values to float. */
+    private static function toFloat(mixed $val): float
     {
-        return is_numeric($v) ? (float)$v : 0.0;
+        return is_numeric($val) ? (float)$val : 0.0;
     }
 
-    /** Round for display (2 d.p.). */
-    private static function rnd($v): float
+    /** Rounds currency values to 2 decimal places. */
+    private static function round(float|int $val): float
     {
-        return round((float)$v, 2);
+        return round((float)$val, 2);
+    }
+
+    /** Injects standardized ISO time formats into a raw segment array. */
+    private static function withIsoTimes(array $segment): array
+    {
+        $segment['departureIso'] = self::formatEpochToIso($segment['departureDate'] ?? null);
+        $segment['arrivalIso']   = self::formatEpochToIso($segment['arrivalDate'] ?? null);
+        return $segment;
     }
 
     /**
-     * Inject ISO helpers into a PKFare segment, preserving raw fields.
-     */
-    private static function withIsoTimes(array $seg): array
-    {
-        $seg['departureIso'] = self::dtMs($seg['departureDate'] ?? null);
-        $seg['arrivalIso']   = self::dtMs($seg['arrivalDate'] ?? null);
-        return $seg;
-    }
-
-    /**
-     * Map baggage to segmentIds via PKFare's 1-based global segment indexes.
-     * @return array{0: array<string,array<string,mixed>>, 1: array<string,array<string,mixed>>}
+     * Translates PKFare's 1-based global baggage index array into actual segment IDs.
      */
     private static function mapBaggageByGlobalIndex(array $adtBlocks, array $globalIdxToSegId): array
     {
         $adtChecked = [];
         $adtCarry   = [];
 
-        foreach ($adtBlocks as $b) {
-            $indices = (array)($b['segmentIndexList'] ?? []);
-            foreach ($indices as $n) {
-                $sid = $globalIdxToSegId[$n] ?? null;
-                if (!$sid) continue;
+        foreach ($adtBlocks as $block) {
+            $indices = (array)($block['segmentIndexList'] ?? []);
 
-                if (isset($b['baggageAmount']) || isset($b['baggageWeight'])) {
-                    $adtChecked[$sid] = [
-                        'amount' => $b['baggageAmount'] ?? null,
-                        'weight' => $b['baggageWeight'] ?? null,
+            foreach ($indices as $index) {
+                $segmentId = $globalIdxToSegId[$index] ?? null;
+                if (!$segmentId) continue;
+
+                if (isset($block['baggageAmount']) || isset($block['baggageWeight'])) {
+                    $adtChecked[$segmentId] = [
+                        'amount' => $block['baggageAmount'] ?? null,
+                        'weight' => $block['baggageWeight'] ?? null,
                     ];
                 }
-                if (isset($b['carryOnAmount']) || isset($b['carryOnWeight']) || isset($b['carryOnSize'])) {
-                    $adtCarry[$sid] = [
-                        'amount' => $b['carryOnAmount'] ?? null,
-                        'weight' => $b['carryOnWeight'] ?? null,
-                        'size'   => $b['carryOnSize'] ?? null,
+
+                if (isset($block['carryOnAmount']) || isset($block['carryOnWeight']) || isset($block['carryOnSize'])) {
+                    $adtCarry[$segmentId] = [
+                        'amount' => $block['carryOnAmount'] ?? null,
+                        'weight' => $block['carryOnWeight'] ?? null,
+                        'size'   => $block['carryOnSize'] ?? null,
                     ];
                 }
             }
@@ -460,27 +428,29 @@ final class MapOffer
     }
 
     /**
-     * Map mini rules to segmentIds via PKFare's 1-based global segment indexes.
+     * Translates PKFare's 1-based global rules index array into actual segment IDs.
      */
     private static function mapMiniRulesByGlobalIndex(array $adtBlocks, array $globalIdxToSegId): array
     {
         $rulesADT = [];
+
         foreach ($adtBlocks as $block) {
             $ids = [];
-            foreach ((array)($block['segmentIndex'] ?? []) as $n) {
-                $sid = $globalIdxToSegId[$n] ?? null;
-                if ($sid) $ids[] = $sid;
+            foreach ((array)($block['segmentIndex'] ?? []) as $index) {
+                $segmentId = $globalIdxToSegId[$index] ?? null;
+                if ($segmentId) $ids[] = $segmentId;
             }
-            $miniRules = array_map(static function ($r) {
-                $label = match ($r['penaltyType'] ?? -1) {
+
+            $miniRules = array_map(function ($rule) {
+                // Map PKFare's numeric penalty types to readable strings
+                $rule['label'] = match ($rule['penaltyType'] ?? -1) {
                     0       => 'Refund',
                     1       => 'Change',
                     2       => 'No-show',
                     3       => 'Reissue / Reroute',
                     default => 'Penalty',
                 };
-                $r['label'] = $label;
-                return $r;
+                return $rule;
             }, (array)($block['miniRules'] ?? []));
 
             $rulesADT[] = [
@@ -488,30 +458,7 @@ final class MapOffer
                 'miniRules'  => $miniRules,
             ];
         }
+
         return $rulesADT;
-    }
-
-    /**
-     * Materialize ordered segment IDs into full segment objects, injecting flightId and ISO helpers.
-     * (Kept as-is for compatibility; not used in the new 'segments' assembly.)
-     */
-    private static function segmentsFromIds(array $ids, array $segmentsById, array $flightsById): array
-    {
-        // Build segId -> flightId map from flights
-        $segToFlight = [];
-        foreach ($flightsById as $fid => $flight) {
-            foreach ((array)($flight['segmengtIds'] ?? []) as $sid) {
-                $segToFlight[$sid] = $fid;
-            }
-        }
-
-        $out = [];
-        foreach ($ids as $sid) {
-            if (!isset($segmentsById[$sid])) continue;
-            $seg = $segmentsById[$sid];
-            $seg['flightId'] = $segToFlight[$sid] ?? null;
-            $out[] = self::withIsoTimes($seg);
-        }
-        return $out;
     }
 }

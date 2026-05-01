@@ -4,101 +4,173 @@ namespace App\Services;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
-use Illuminate\Support\Facades\Log; // For logging API errors
+use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
+use Exception;
 
-// This service class encapsulates all interactions with the PKfare API.
-// It handles API requests, error handling, and response parsing.
+/**
+ * Service class for interacting with the PKfare Flight API.
+ * * This class encapsulates all API requests, handles authentication signatures,
+ * formats payloads to match PKfare's specific schema requirements, and manages errors.
+ */
 class PKfareService
 {
+    /**
+     * @var Client The Guzzle HTTP client instance used for API requests.
+     */
     protected Client $client;
-    protected string $baseUrl;
-    protected string $apiKey;
-    protected string $apiSecret;
-    protected string $apiSignature;
 
     /**
-     * Constructor for PKfareService.
-     * Initializes the Guzzle HTTP client with base URI and headers.
+     * @var string The base URL for the PKfare API.
+     */
+    protected string $baseUrl;
+
+    /**
+     * @var string The Partner ID / API Key provided by PKfare.
+     */
+    protected string $apiKey;
+
+    /**
+     * @var string The API Secret provided by PKfare, used for signing requests.
+     */
+    protected string $apiSecret;
+
+    /**
+     * Constructor.
+     * Initializes configuration and sets up the Guzzle HTTP client.
+     *
+     * @throws InvalidArgumentException If API credentials are not set in the environment.
      */
     public function __construct()
     {
-        // Retrieve PKfare API credentials from environment variables.
-        // Ensure these are set in your .env file.
         $this->baseUrl = config('app.pkfare_api_base_url', 'https://api.pkfare.com');
-        $this->apiKey = config('app.pkfare_api_key');
-        $this->apiSecret = config('app.pkfare_api_secret');
-        $this->apiSignature = config('app.pkfare_api_signature');
+        $this->apiKey = config('app.pkfare_api_key', '');
+        $this->apiSecret = config('app.pkfare_api_secret', '');
 
-        // Basic validation for API keys
         if (empty($this->apiKey) || empty($this->apiSecret)) {
             Log::error('PKfare API keys are not set in the environment variables.');
-            // You might want to throw an exception here in a production environment
-            // throw new \Exception('PKfare API keys not configured.');
+            throw new InvalidArgumentException('PKfare API keys are not configured.');
         }
 
-        // Initialize Guzzle HTTP client
+        // Initialize the Guzzle client with base URI, default headers, and timeout.
         $this->client = new Client([
             'base_uri' => $this->baseUrl,
             'headers' => [
                 'Content-Type' => 'application/json',
                 'Accept' => 'application/json',
-                // PKfare usually requires authentication headers.
-                // This is a placeholder; you'll need to consult PKfare's API documentation
-                // for the exact authentication mechanism (e.g., custom headers, OAuth, HMAC).
-                // For demonstration, let's assume a simple API Key header for now,
-                // but this will likely need to be replaced with their specific method.
-                'X-PKFARE-API-Key' => $this->apiKey,
-                // 'Authorization' => 'Bearer ' . $this->generateAccessToken(), // Example for OAuth
             ],
-            'timeout' => 75, // Request timeout in seconds
+            'timeout' => 75, // 75 seconds timeout for long-running flight searches
         ]);
     }
 
     /**
-     * Helper method to make a GET request to the PKfare API.
+     * Generates the standard authentication payload required by PKfare.
+     * PKfare uses an MD5 hash of the Partner ID and API Secret for authentication.
      *
-     * @param string $endpoint The API endpoint (e.g., '/flights/search')
-     * @param array $query Query parameters for the request
-     * @return array The JSON decoded response
-     * @throws \Exception If the API request fails
+     * @return array The authentication block for the API payload.
+     */
+    protected function getAuthPayload(): array
+    {
+        return [
+            'partnerId' => $this->apiKey,
+            'sign' => md5($this->apiKey . $this->apiSecret),
+        ];
+    }
+
+    /**
+     * Formats the journeys array to match PKfare's specific indexed key requirement.
+     * PKfare expects flight segments to be grouped by journey keys (e.g., 'journey_0', 'journey_1').
+     *
+     * @param array $journeys Raw array of journey segments.
+     * @return array Formatted array grouped by 'journey_X' keys.
+     */
+    protected function formatJourneys(array $journeys): array
+    {
+        // If a single flat journey segment is passed, wrap it in an array to standardize the loop.
+        if (!empty($journeys) && isset($journeys[0]['flightNum'])) {
+            $journeys = [$journeys];
+        }
+
+        $formattedJourneys = [];
+        foreach ($journeys as $index => $segments) {
+            $key = 'journey_' . $index;
+            $formattedJourneys[$key] = array_map(function ($segment) {
+                return [
+                    'airline' => $segment['airline'] ?? '',
+                    'flightNum' => $segment['flightNum'] ?? '',
+                    'arrival' => $segment['arrival'] ?? '',
+                    // Support alternative keys (strArrivalDate vs arrivalDate) gracefully
+                    'arrivalDate' => $segment['strArrivalDate'] ?? $segment['arrivalDate'] ?? '',
+                    'arrivalTime' => $segment['strArrivalTime'] ?? $segment['arrivalTime'] ?? '',
+                    'departure' => $segment['departure'] ?? '',
+                    'departureDate' => $segment['strDepartureDate'] ?? $segment['departureDate'] ?? '',
+                    'departureTime' => $segment['strDepartureTime'] ?? $segment['departureTime'] ?? '',
+                    'bookingCode' => $segment['bookingCode'] ?? '',
+                ];
+            }, $segments);
+        }
+
+        return $formattedJourneys;
+    }
+
+    /**
+     * Executes a GET request to the PKfare API.
+     *
+     * @param string $endpoint The API endpoint (e.g., '/json/someEndpoint').
+     * @param array $query Optional query parameters.
+     * @return array The JSON decoded response.
+     * @throws Exception If the request fails or returns invalid JSON.
      */
     public function get(string $endpoint, array $query = []): array
     {
         try {
             $response = $this->client->get($endpoint, ['query' => $query]);
-            return json_decode($response->getBody()->getContents(), true);
+            $data = json_decode($response->getBody()->getContents(), true);
+
+            if (!is_array($data)) {
+                throw new Exception("Invalid JSON response from PKfare API on GET {$endpoint}");
+            }
+
+            return $data;
         } catch (RequestException $e) {
-            $this->handleRequestException($e, $endpoint);
+            // Explicitly throw the exception returned by the helper
+            throw $this->handleRequestException($e, $endpoint);
         }
     }
 
     /**
-     * Helper method to make a POST request to the PKfare API.
+     * Executes a POST request to the PKfare API.
      *
-     * @param string $endpoint The API endpoint (e.g., '/flights/booking')
-     * @param array $data Request body data
-     * @return array The JSON decoded response
-     * @throws \Exception If the API request fails
+     * @param string $endpoint The API endpoint (e.g., '/json/shoppingV8').
+     * @param array $data The JSON payload body.
+     * @return array The JSON decoded response.
+     * @throws Exception If the request fails or returns invalid JSON.
      */
     public function post(string $endpoint, array $data = []): array
     {
         try {
             $response = $this->client->post($endpoint, ['json' => $data]);
-            return json_decode($response->getBody()->getContents(), true);
+            $decodedData = json_decode($response->getBody()->getContents(), true);
+
+            if (!is_array($decodedData)) {
+                throw new Exception("Invalid JSON response from PKfare API on POST {$endpoint}");
+            }
+
+            return $decodedData;
         } catch (RequestException $e) {
-            $this->handleRequestException($e, $endpoint);
+            // Explicitly throw the exception returned by the helper
+            throw $this->handleRequestException($e, $endpoint);
         }
     }
 
     /**
-     * Handles Guzzle Request Exceptions, logs them, and throws a generic exception.
+     * Handles Guzzle Request Exceptions, logs them, and prepares a generic exception.
      *
      * @param RequestException $e The exception caught
      * @param string $endpoint The endpoint that was called
-     * @throws \Exception
+     * @return Exception
      */
-    protected function handleRequestException(RequestException $e, string $endpoint): void
+    protected function handleRequestException(RequestException $e, string $endpoint): Exception
     {
         $statusCode = $e->hasResponse() ? $e->getResponse()->getStatusCode() : 'N/A';
         $responseBody = $e->hasResponse() ? $e->getResponse()->getBody()->getContents() : 'No response body';
@@ -107,37 +179,29 @@ class PKfareService
             'status_code' => $statusCode,
             'message' => $e->getMessage(),
             'response_body' => $responseBody,
-            'trace' => $e->getTraceAsString(),
         ]);
 
-        // Re-throw a more generic exception to avoid exposing internal API details.
-        throw new \Exception("PKfare API request failed: " . $e->getMessage());
+        // Return the exception instead of throwing it here
+        return new Exception("PKfare API request failed: " . $e->getMessage());
     }
 
     /**
-     * Searches for flights based on provided criteria.
+     * Searches for flights based on provided passenger and routing criteria.
      *
-     * @param array $criteria Search parameters (tripType, flights, passengers, airline, etc.)
-     * @return array Flight search payload
-     * @throws \Exception
+     * @param array $criteria Contains search rules: flights (array), adults, children, infants, airline, nonstop, etc.
+     * @return array The shopping API response payload.
+     * @throws Exception If no flight legs are provided.
      */
     public function searchFlights(array $criteria): array
     {
-        $tripType = $criteria['tripType'] ?? 'Oneway';
         $flights = $criteria['flights'] ?? [];
 
-        Log::info('Search Criteria: ', $criteria['flights']);
-
         if (empty($flights)) {
-            throw new \Exception("At least one flight leg must be provided.");
+            throw new Exception("At least one flight leg must be provided.");
         }
 
-        // Authentication payload
         $payload = [
-            'authentication' => [
-                'partnerId' => $this->apiKey,
-                'sign' => md5($this->apiKey . $this->apiSecret),
-            ],
+            'authentication' => $this->getAuthPayload(),
             'search' => [
                 'adults' => $criteria['adults'] ?? 1,
                 'children' => $criteria['children'] ?? 0,
@@ -151,8 +215,8 @@ class PKfareService
             ],
         ];
 
-        // Build flight legs from the flights array
-        foreach ($flights as $index => $flight) {
+        // Build outbound flight legs
+        foreach ($flights as $flight) {
             $payload['search']['searchAirLegs'][] = [
                 'cabinClass'   => $flight['cabinClass'] ?? $criteria['cabinClass'] ?? '',
                 'departureDate'=> $flight['depart'],
@@ -162,143 +226,52 @@ class PKfareService
             ];
         }
 
-        // If it’s a round-trip but only one leg is provided, add return leg automatically
+        // Automatically append return leg if it's a round trip
         if (!empty($criteria['returnDate'])) {
-            $outbound = $flights[0];
             $payload['search']['searchAirLegs'][] = [
                 'cabinClass'   => '',
                 'departureDate'=> $criteria['returnDate'],
-                'origin'       => $criteria['destination'], // reverse
-                'destination'  => $criteria['origin'],      // reverse
-                'airline'      => $criteria['airline'] ?? $criteria['airline'] ?? '',
+                'origin'       => $criteria['destination'], // swap origin/destination for return
+                'destination'  => $criteria['origin'],
+                'airline'      => $criteria['airline'] ?? '',
             ];
         }
-
-        Log::info('Payload Search: ', $payload);
 
         return $this->post('/json/shoppingV8', $payload);
     }
 
-
     /**
-     * Searches for flights based on provided criteria.
+     * Retrieves precise pricing and validates availability for a selected flight solution.
      *
-     * @param array $criteria An associative array of search parameters (e.g., origin, destination, departureDate, returnDate, adults, children, infants)
-     * @return array The flight search results
-     * @throws \Exception
-     */
-    // public function searchFlights(array $criteria): array
-    // {
-    //     $tripType = $criteria['tripType'] ?? 'Oneway';
-
-    //     $payload = [
-    //         'authentication' => [
-    //             'partnerId' => $this->apiKey,
-    //             'sign' => md5($this->apiKey . $this->apiSecret),
-    //         ],
-    //         'search' => [
-    //             'adults' => $criteria['adults'] ?? 1,
-    //             'children' => $criteria['children'] ?? 0,
-    //             'infants' => $criteria['infants'] ?? 0,
-    //             'nonstop' => $criteria['nonstop'] ?? 0,
-    //             'airline' => $criteria['airline'] ?? '',
-    //             'solutions' => $criteria['solutions'] ?? 0,
-    //             'tag' => '',
-    //             'returnTagPrice' => 'Y',
-    //             'searchAirLegs' => [],
-    //         ],
-    //     ];
-
-    //     // Add first leg
-    //     $payload['search']['searchAirLegs'][] = [
-    //         'cabinClass' => '',
-    //         'departureDate' => $criteria['departureDate'],
-    //         'destination' => $criteria['destination'],
-    //         'origin' => $criteria['origin'],
-    //         'airline' => $criteria['airline'] ?? '',
-    //     ];
-
-    //     // Optional return leg
-    //     if (!empty($criteria['returnDate'])) {
-    //         $payload['search']['searchAirLegs'][] = [
-    //             'cabinClass' => '',
-    //             'departureDate' => $criteria['returnDate'],
-    //             'destination' => $criteria['origin'],     // Reverse destination
-    //             'origin' => $criteria['destination'],     // Reverse origin
-    //             'airline' => $criteria['airline'] ?? '',
-    //         ];
-    //     }
-
-    //     Log::info('Payload Search: ', $payload);
-
-    //     return $this->post('/json/shoppingV8', $payload);
-    // }
-
-    /**
-     * Retrieves precise pricing for a selected flight using dynamic criteria.
-     *
-     * @param array $criteria An associative array with journeys, passengers, solutionId, etc.
-     * @return array The precise pricing response
-     * @throws \Exception
+     * @param array $criteria Requires 'journeys' array and 'solutionKey'.
+     * @return array The precise pricing response.
      */
     public function getPrecisePricing(array $criteria): array
     {
-        // Build authentication
         $payload = [
-            'authentication' => [
-                'partnerId' => $this->apiKey,
-                'sign' => md5($this->apiKey . $this->apiSecret),
-            ],
+            'authentication' => $this->getAuthPayload(),
             'pricing' => [
-                'journeys' => [], // Will be populated below
+                'journeys' => $this->formatJourneys($criteria['journeys'] ?? []),
                 'adults' => $criteria['adults'] ?? 1,
                 'children' => $criteria['children'] ?? 0,
                 'infants' => $criteria['infants'] ?? 0,
-                // 'solutionId' => 'direct pricing',
-                'solutionId' => "direct_pricing", // Removed solutionId default to force it to be provided
+                'solutionId' => "direct_pricing",
                 'solutionKey' => $criteria['solutionKey'] ?? '',
                 'cabin' => '',
                 'tag' => "",
             ],
         ];
 
-
-        $journeys = $criteria['journeys'] ?? [];
-
-        if (!empty($journeys) && isset($journeys[0]['flightNum'])) {
-            // Single flat journey, wrap it
-            $journeys = [ $journeys ];
-        }
-
-        // Transform journey segments (must be associative with keys like journey_0, journey_1)
-        foreach ($journeys as $index => $segments) {
-            $key = 'journey_' . $index;
-
-            $payload['pricing']['journeys'][$key] = array_map(function ($segment) {
-                return [
-                    'airline' => $segment['airline'] ?? '',
-                    'flightNum' => $segment['flightNum'] ?? '',
-                    'arrival' => $segment['arrival'] ?? '',
-                    'arrivalDate' => $segment['arrivalDate'] ?? '',
-                    'arrivalTime' => $segment['arrivalTime'] ?? '',
-                    'departure' => $segment['departure'] ?? '',
-                    'departureDate' => $segment['departureDate'] ?? '',
-                    'departureTime' => $segment['departureTime'] ?? '',
-                    'bookingCode' => $segment['bookingCode'] ?? '',
-                ];
-            }, $segments);
-        }
-
-        Log::info('Payload Precise Pricing', $payload);
-
-        // Log::debug('Received journeys:', $payload);
-
         return $this->post('/json/precisePricing_V10', $payload);
     }
 
-
     /**
-     * Extract solutionKey and journeys (flight IDs) from selected solution.
+     * Utility method to extract specific journey data from a list of solutions based on a solutionKey.
+     *
+     * @param array $solutions List of available flight solutions.
+     * @param string $solutionKey The unique key identifying the chosen solution.
+     * @return array An array containing the solution key and its journeys.
+     * @throws Exception If the solutionKey is not found in the provided solutions array.
      */
     public function extractPricingInfoFromSolutions(array $solutions, string $solutionKey): array
     {
@@ -311,127 +284,75 @@ class PKfareService
             }
         }
 
-        throw new \Exception("Solution with key {$solutionKey} not found.");
+        throw new Exception("Solution with key {$solutionKey} not found.");
     }
 
     /**
-     * Ancillary Pricing
+     * Requests ancillary pricing (e.g., baggage, seat selection) for a given journey.
      *
-     * @param array $bookingDetails An associative array containing all necessary booking information
-     * (e.g., selected flight, passenger details, contact info).
-     * @return array The booking confirmation details
-     * @throws \Exception
+     * @param array $criteria Requires 'journeys', 'solutionId', and passenger counts.
+     * @return array The ancillary pricing response.
      */
-    public function ancillaryPricing($criteria){
-        // Build payload as expected by PKFare's AncillaryPricing API
+    public function ancillaryPricing(array $criteria): array
+    {
         $payload = [
-            'authentication' => [
-                'partnerId' => $this->apiKey,
-                'sign' => md5($this->apiKey . $this->apiSecret),
-            ],
+            'authentication' => $this->getAuthPayload(),
             'pricing' => [
                 'adults' => $criteria['adults'] ?? 1,
                 'children' => $criteria['children'] ?? 0,
-                "ancillary" => [
-                    2
-                ],
+                "ancillary" => [2], // 2 usually denotes Baggage in typical airline APIs, verify with PKfare docs
                 'solutionId' => $criteria['solutionId'] ?? null,
-                'journeys' => [], // Will be populated below
-                // 'infants' => $criteria['infants'] ?? 0,
-                // 'cabin' => $criteria['cabinType'] ?? '',
-                // 'tag' => $criteria['tag'] ?? 'direct pricing',
+                'journeys' => $this->formatJourneys($criteria['journeys'] ?? []),
             ]
         ];
-
-
-        $journeys = $criteria['journeys'] ?? [];
-
-        if (!empty($journeys) && isset($journeys[0]['flightNum'])) {
-            // Single flat journey, wrap it
-            $journeys = [ $journeys ];
-        }
-
-        // Transform journey segments (must be associative with keys like journey_0, journey_1)
-        foreach ($journeys as $index => $segments) {
-            $key = 'journey_' . $index;
-
-            $payload['pricing']['journeys'][$key] = array_map(function ($segment) {
-                return [
-                    'airline' => $segment['airline'] ?? '',
-                    'flightNum' => $segment['flightNum'] ?? '',
-                    'arrival' => $segment['arrival'] ?? '',
-                    'arrivalDate' => $segment['arrivalDate'] ?? '',
-                    'arrivalTime' => $segment['arrivalTime'] ?? '',
-                    'departure' => $segment['departure'] ?? '',
-                    'departureDate' => $segment['departureDate'] ?? '',
-                    'departureTime' => $segment['departureTime'] ?? '',
-                    'bookingCode' => $segment['bookingCode'] ?? '',
-                ];
-            }, $segments);
-        }
-
-        // Log::debug('Received ancillary:', $payload);
-
-
-        // Log::info('Payload Ancillary', $payload);
 
         return $this->post('/json/ancillaryPricingV6', $payload);
     }
 
     /**
-     * Creates a flight booking.
+     * Submits a booking request to PKfare.
      *
-     * @param array $bookingDetails An associative array containing all necessary booking information
-     * (e.g., selected flight, passenger details, contact info).
-     * @return array The booking confirmation details
-     * @throws \Exception
+     * @param array $bookingDetails An extensive associative array containing passenger info,
+     * contact info, pricing breakdown, and flight segments.
+     * @return array The booking confirmation response, usually including a PNR or order number.
      */
-
     public function createBooking(array $bookingDetails): array
     {
-
-        // Build payload as expected by PKFare's booking API
         $payload = [
-            'authentication' => [
-                'partnerId' => $this->apiKey,
-                'sign' => md5($this->apiKey . $this->apiSecret),
-            ],
+            'authentication' => $this->getAuthPayload(),
             'booking' => [
+                // Map local passenger array to PKfare's expected format
                 'passengers' => array_map(function ($passenger, $index) {
                     return [
                         'passengerIndex' => $index + 1,
                         'birthday' => $passenger['dob'],
                         'firstName' => $passenger['firstName'],
                         'lastName' => $passenger['lastName'],
-                        'nationality' => $passenger['nationality'] ?? 'KE', // default if missing
-                        'cardType' => $passenger['cardType'] ?? 'P',
+                        'nationality' => $passenger['nationality'] ?? 'KE',
+                        'cardType' => $passenger['cardType'] ?? 'P', // 'P' for Passport
                         'cardNum' => $passenger['passportNumber'] ?? null,
                         'cardExpiredDate' => $passenger['passportExpiry'] ?? null,
-                        'psgType' => $passenger['type'],
-                        'sex' => strtoupper(substr($passenger['gender'], 0, 1)), // 'M' or 'F'
+                        'psgType' => $passenger['type'], // ADT, CHD, INF
+                        'sex' => strtoupper(substr($passenger['gender'], 0, 1)), // Ensure 'M' or 'F'
                         'ffpNumber' => $passenger['ffpNumber'] ?? null,
                         'ffpAirline' => $passenger['ffpAirline'] ?? null,
-                        'ktn' => $passenger['ktn'] ?? null,
+                        'ktn' => $passenger['ktn'] ?? null, // Known Traveler Number
                         'redress' => $passenger['redress'] ?? null,
-                        'associatedPassengerIndex' => $passenger['associatedPassengerIndex'] ?? null,
+                        'associatedPassengerIndex' => $passenger['associatedPassengerIndex'] ?? null, // Required for infants
                     ];
                 }, $bookingDetails['passengers'], array_keys($bookingDetails['passengers'])),
 
                 'solution' => [
                     'solutionId' => $bookingDetails['solutionId'],
-
-                    // Adults
+                    // Fare breakdown mapping
                     'adtFare' => $bookingDetails['selectedFlight']['priceBreakdown']['ADT']['fare'] ?? 0,
                     'adtTax'  => $bookingDetails['selectedFlight']['priceBreakdown']['ADT']['taxes'] ?? 0,
-
-                    // Children
                     'chdFare' => $bookingDetails['selectedFlight']['priceBreakdown']['CHD']['fare'] ?? 0,
                     'chdTax'  => $bookingDetails['selectedFlight']['priceBreakdown']['CHD']['taxes'] ?? 0,
-
-                    // Infants
                     'infFare' => $bookingDetails['selectedFlight']['priceBreakdown']['INF']['fare'] ?? 0,
                     'infTax'  => $bookingDetails['selectedFlight']['priceBreakdown']['INF']['taxes'] ?? 0,
-                    'journeys' => [],
+                    // Format flight segments
+                    'journeys' => $this->formatJourneys($bookingDetails['selectedFlight']['segments'] ?? []),
                 ],
 
                 'contact' => [
@@ -444,59 +365,23 @@ class PKfareService
                     'buyerMobile' => $bookingDetails['contactInfo']['buyerMobile'] ?? null,
                 ],
 
-                'ancillary' => $bookingDetails['ancillary'] ?? [], // Optional baggage/seat selection
+                'ancillary' => $bookingDetails['ancillary'] ?? [],
             ]
         ];
 
-        // Transform journey segments (must be associative with keys like journey_0, journey_1)
-
-        $journeys = $bookingDetails['selectedFlight']['segments'] ?? [];
-
-        if (!empty($journeys) && isset($journeys[0]['flightNum'])) {
-            // Single flat journey, wrap it
-            $journeys = [ $journeys ];
-        }
-
-        // Transform journey segments (must be associative with keys like journey_0, journey_1)
-        foreach ($journeys as $index => $segments) {
-            $key = 'journey_' . $index;
-
-            $payload['booking']['solution']['journeys'][$key] = array_map(function ($segment) {
-                return [
-                    'airline' => $segment['airline'] ?? '',
-                    'flightNum' => $segment['flightNum'] ?? '',
-                    'arrival' => $segment['arrival'] ?? '',
-                    'arrivalDate' => $segment['strArrivalDate'] ?? $segment['arrivalDate'],
-                    'arrivalTime' => $segment['strArrivalTime'] ?? $segment['arrivalTime'],
-                    'departure' => $segment['departure'] ?? '',
-                    'departureDate' => $segment['strDepartureDate'] ?? $segment['departureDate'],
-                    'departureTime' => $segment['strDepartureTime'] ?? $segment['departureTime'],
-                    'bookingCode' => $segment['bookingCode'] ?? '',
-                ];
-            }, $segments);
-        }
-
-        Log::info('Booking Payload: ', $payload);
         return $this->post('/json/preciseBooking_V7', $payload);
     }
 
-
     /**
-     * Retrieves details of an existing booking.
+     * Retrieves the current status and details of an existing booking.
      *
-     * @param string $bookingReference The booking reference number (PNR) from PKfare
-     * @return array The booking details
-     * @throws \Exception
+     * @param string $bookingReference The internal PKfare order number.
+     * @return array The full booking details response.
      */
     public function getBookingDetails(string $bookingReference): array
     {
-
-        // Build payload as expected by PKFare's booking API
         $payload = [
-            'authentication' => [
-                'partnerId' => $this->apiKey,
-                'sign' => md5($this->apiKey . $this->apiSecret),
-            ],
+            'authentication' => $this->getAuthPayload(),
             'data' => [
                 'orderNum' => $bookingReference,
                 'includeFields' => "passengers,journeys,solutions,ancillary,scheduleChange,checkinInfo"
@@ -507,21 +392,15 @@ class PKfareService
     }
 
     /**
-     * Cancels an existing booking.
+     * Cancels an existing booking/PNR.
      *
-     * @param string $bookingReference The booking reference number (PNR) from PKfare
-     * @return array The cancellation confirmation
-     * @throws \Exception
+     * @param array $bookingDetails Requires 'orderNum' and 'virtualPnr' (or regular PNR).
+     * @return array The cancellation response.
      */
     public function cancelBooking(array $bookingDetails): array
     {
-
-        // Build payload as expected by PKFare's booking API
         $payload = [
-            'authentication' => [
-                'partnerId' => $this->apiKey,
-                'sign' => md5($this->apiKey . $this->apiSecret),
-            ],
+            'authentication' => $this->getAuthPayload(),
             'cancel' => [
                 'orderNum' => $bookingDetails['orderNum'],
                 'virtualPnr' => $bookingDetails['pnr']
@@ -532,21 +411,15 @@ class PKfareService
     }
 
     /**
-     * Validates PNR and order price before payment and enforces ticketing within 30 minutes of OrderPricing.
+     * Validates PNR and order price before payment and enforces ticketing within 30 minutes.
      *
-     * @param string $bookingReference The booking reference number (PNR) from PKfare
-     * @return array The order pricing confirmation
-     * @throws \Exception
+     * @param string $orderNum The order number from the booking response.
+     * @return array The order pricing confirmation.
      */
     public function orderPricing(string $orderNum): array
     {
-
-        // Build payload as expected by PKFare's booking API
         $payload = [
-            'authentication' => [
-                'partnerId' => $this->apiKey,
-                'sign' => md5($this->apiKey . $this->apiSecret),
-            ],
+            'authentication' => $this->getAuthPayload(),
             'orderPricing' => [
                 'orderNum' => $orderNum
             ]
@@ -556,21 +429,15 @@ class PKfareService
     }
 
     /**
-     * Validates PNR and order price before payment and enforces ticketing within 30 minutes of OrderPricing.
+     * Issues the actual ticket for a created order.
      *
-     * @param string $bookingReference The booking reference number (PNR) from PKfare
-     * @return array The order pricing confirmation
-     * @throws \Exception
+     * @param array $criteria Requires 'orderNum' and 'PNR'. Optionally accepts contact info.
+     * @return array The ticketing response (should contain ticket numbers upon success).
      */
     public function ticketOrder(array $criteria): array
     {
-
-        // Build payload as expected by PKFare's booking API
         $payload = [
-            'authentication' => [
-                'partnerId' => $this->apiKey,
-                'sign' => md5($this->apiKey . $this->apiSecret),
-            ],
+            'authentication' => $this->getAuthPayload(),
             'ticketing' => [
                 'orderNum' => $criteria['orderNum'],
                 'PNR' => $criteria['PNR'],
@@ -582,6 +449,4 @@ class PKfareService
 
         return $this->post('/json/ticketing', $payload);
     }
-
-    // TODO: Add more PKfare specific methods as needed (e.g., ticket issuance, payment status, etc.)
 }
