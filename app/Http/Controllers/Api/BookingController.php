@@ -40,6 +40,11 @@ class BookingController extends Controller
     {
         $query = Booking::with('transactions')->latest();
 
+        // Only admins can see all bookings. Everyone else (agents, customers) only sees their own.
+        if (!$request->user()->hasRole('admin')) {
+            $query->where('user_id', $request->user()->id);
+        }
+
         // Scope to the current user unless they are an admin/agent
         if (!$request->user()->hasRole('agent') && !$request->user()->hasRole('admin')) {
             $query->where('user_id', $request->user()->id);
@@ -93,14 +98,14 @@ class BookingController extends Controller
                 $firstError = $validator->errors()->first();
                 // Clean up the string (e.g. "The passengers.0.firstName field..." -> "The passenger first name field...")
                 $cleanError = preg_replace('/passengers\.\d+\./', 'passenger ', $firstError);
-                
+
                 return response()->json([
                     'success' => false,
                     'code'    => 'VALIDATION_ERROR',
                     'message' => $cleanError,
                 ], 400); // Send as 400 so the frontend handles it like a normal PKFare error
             }
-            
+
             $validatedData = $validator->validated();
 
             $user = $request->user();
@@ -397,9 +402,13 @@ class BookingController extends Controller
     private function isAuthorizedForBooking(Booking $booking): bool
     {
         $user = auth()->user();
-        if ($user->hasRole('admin') || $user->hasRole('agent')) {
+
+        // Admins can access everything
+        if ($user->hasRole('admin')) {
             return true;
         }
+
+        // Agents and regular users can only access their own bookings
         return $booking->user_id === $user->id;
     }
 
