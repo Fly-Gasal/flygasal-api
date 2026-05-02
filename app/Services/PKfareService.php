@@ -333,7 +333,7 @@ class PKfareService
                         'cardNum' => $passenger['passportNumber'] ?? null,
                         'cardExpiredDate' => $passenger['passportExpiry'] ?? null,
                         'psgType' => $passenger['type'], // ADT, CHD, INF
-                        'sex' => strtoupper(substr($passenger['gender'], 0, 1)), // Ensure 'M' or 'F'
+                        'sex' => $passenger['gender'],// Ensure 'M' or 'F'
                         'ffpNumber' => $passenger['ffpNumber'] ?? null,
                         'ffpAirline' => $passenger['ffpAirline'] ?? null,
                         'ktn' => $passenger['ktn'] ?? null, // Known Traveler Number
