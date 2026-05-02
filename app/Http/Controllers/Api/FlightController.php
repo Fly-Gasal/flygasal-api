@@ -68,6 +68,7 @@ class FlightController extends Controller
             // Generate a unique cache key based on the exact search criteria
             $cacheKey = 'flight_search_' . md5(json_encode($criteria));
 
+            Log::info('Flight search initiated', ['criteria' => $criteria, 'cacheKey' => $cacheKey]);
             // 2. Check cache first
             $resp = Cache::get($cacheKey);
 
