@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\Validator;
 
 /**
  * Handles the lifecycle of flight bookings.
@@ -61,7 +62,8 @@ class BookingController extends Controller
     {
         DB::beginTransaction();
         try {
-            $validatedData = $request->validate([
+            // 1. Manually validate so we can control the exact error format
+            $validator = Validator::make($request->all(), [
                 'selectedFlight' => 'required|array',
                 'solutionId'     => 'required|string',
                 'passengers'     => 'required|array|min:1',
@@ -69,7 +71,7 @@ class BookingController extends Controller
                 'passengers.*.lastName'       => 'required|string|max:255',
                 'passengers.*.type'           => 'required|string|in:ADT,CHD,INF',
                 'passengers.*.dob'            => 'required|date_format:Y-m-d',
-                'passengers.*.gender'         => 'required|string|in:M,F',
+                'passengers.*.gender'         => 'required|string|in:M,F', // Expecting M or F
                 'passengers.*.passportNumber' => 'nullable|string|max:255',
                 'passengers.*.passportExpiry' => 'nullable|date_format:Y-m-d|after_or_equal:today',
                 'passengers.*.nationality'    => 'nullable|string|size:2',
@@ -79,12 +81,32 @@ class BookingController extends Controller
                 'totalPrice'   => 'required|numeric|min:0',
                 'currency'     => 'required|string|size:3',
                 'agent_fee'    => 'nullable|numeric|min:0',
+            ], [
+                // Optional: Custom friendly messages
+                'passengers.*.gender.in' => 'Please ensure a valid gender is selected for all passengers.',
+                'passengers.*.firstName.required' => 'A first name is required for all passengers.',
             ]);
+
+            // 2. If validation fails, return the exact first error string
+            if ($validator->fails()) {
+                DB::rollBack();
+                $firstError = $validator->errors()->first();
+                // Clean up the string (e.g. "The passengers.0.firstName field..." -> "The passenger first name field...")
+                $cleanError = preg_replace('/passengers\.\d+\./', 'passenger ', $firstError);
+                
+                return response()->json([
+                    'success' => false,
+                    'code'    => 'VALIDATION_ERROR',
+                    'message' => $cleanError,
+                ], 400); // Send as 400 so the frontend handles it like a normal PKFare error
+            }
+            
+            $validatedData = $validator->validated();
 
             $user = $request->user();
             if (!$user) {
                 DB::rollBack();
-                return response()->json(['error' => 'Unauthenticated'], 401);
+                return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
             }
 
             $pkfareBookingDetails = [
