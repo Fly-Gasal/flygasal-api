@@ -37,13 +37,13 @@ class PKfareService
 
     /**
      * Constructor.
-     * Initializes configuration and sets up the Guzzle HTTP client.
+     * Initializes configuration and sets up the Guzzle HTTP client with automatic retry logic.
      *
      * @throws InvalidArgumentException If API credentials are not set in the environment.
      */
     public function __construct()
     {
-        $this->baseUrl = config('app.pkfare_api_base_url', 'https://api.pkfare.com');
+        $this->baseUrl = config('app.pkfare_api_base_url', 'https://pkfare.com');
         $this->apiKey = config('app.pkfare_api_key', '');
         $this->apiSecret = config('app.pkfare_api_secret', '');
 
@@ -52,8 +52,38 @@ class PKfareService
             throw new InvalidArgumentException('PKfare API keys are not configured.');
         }
 
-        // Initialize the Guzzle client with base URI, default headers, and timeout.
+        // 1. Create a Guzzle HandlerStack
+        $handlerStack = \GuzzleHttp\HandlerStack::create();
+
+        // 2. Push the retry middleware to handle network and DNS failures (cURL error 6)
+        $handlerStack->push(\GuzzleHttp\Middleware::retry(
+            function ($retries, \GuzzleHttp\Psr7\Request $request, \GuzzleHttp\Psr7\Response $response = null, $exception = null) {
+                // Limit the number of retries to 3
+                if ($retries >= 3) {
+                    return false;
+                }
+
+                // Retry if a connection/DNS exception occurs (e.g., cURL error 6)
+                if ($exception instanceof \GuzzleHttp\Exception\ConnectException) {
+                    return true;
+                }
+
+                // Optional: Retry if the provider returns a temporary server error (502, 503, 504)
+                if ($response && in_array($response->getStatusCode(), [502, 503, 504])) {
+                    return true;
+                }
+
+                return false;
+            },
+            function ($retries) {
+                // Exponential backoff delay (100ms, 200ms, 400ms) between retries
+                return 100 * pow(2, $retries);
+            }
+        ));
+
+        // Initialize the Guzzle client with the handler, base URI, default headers, and timeout.
         $this->client = new Client([
+            'handler'  => $handlerStack, // Inject the retry logic here
             'base_uri' => $this->baseUrl,
             'headers' => [
                 'Content-Type' => 'application/json',
@@ -62,6 +92,7 @@ class PKfareService
             'timeout' => 75, // 75 seconds timeout for long-running flight searches
         ]);
     }
+
 
     /**
      * Generates the standard authentication payload required by PKfare.
