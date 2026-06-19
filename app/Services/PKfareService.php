@@ -90,6 +90,14 @@ class PKfareService
                 'Accept' => 'application/json',
             ],
             'timeout' => 75, // 75 seconds timeout for long-running flight searches
+
+            // FORCE GUZZLE TO BYPASS YOUR HOST'S DNS FOR PKFARE
+            'curl' => [
+                CURLOPT_RESOLVE => [
+                    '://pkfare.com:104.18.14.224',
+                    '://pkfare.com:104.18.15.224'
+                ]
+            ]
         ]);
     }
 
