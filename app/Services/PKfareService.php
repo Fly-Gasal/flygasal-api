@@ -43,7 +43,10 @@ class PKfareService
      */
     public function __construct()
     {
-        $this->baseUrl = config('app.pkfare_api_base_url', 'https://pkfare.com');
+        // 1. FORCE THE IP ADDRESS DIRECTLY AS THE BASE URL
+        // We use Cloudflare's IP for api.pkfare.com directly
+        $this->baseUrl = 'https://104.18.14.224';
+
         $this->apiKey = config('app.pkfare_api_key', '');
         $this->apiSecret = config('app.pkfare_api_secret', '');
 
@@ -52,56 +55,33 @@ class PKfareService
             throw new InvalidArgumentException('PKfare API keys are not configured.');
         }
 
-        // 1. Create a Guzzle HandlerStack
         $handlerStack = \GuzzleHttp\HandlerStack::create();
-
-        // 2. Push the retry middleware to handle network and DNS failures (cURL error 6)
         $handlerStack->push(\GuzzleHttp\Middleware::retry(
             function ($retries, \GuzzleHttp\Psr7\Request $request, \GuzzleHttp\Psr7\Response $response = null, $exception = null) {
-                // Limit the number of retries to 3
-                if ($retries >= 3) {
-                    return false;
-                }
-
-                // Retry if a connection/DNS exception occurs (e.g., cURL error 6)
-                if ($exception instanceof \GuzzleHttp\Exception\ConnectException) {
-                    return true;
-                }
-
-                // Optional: Retry if the provider returns a temporary server error (502, 503, 504)
-                if ($response && in_array($response->getStatusCode(), [502, 503, 504])) {
-                    return true;
-                }
-
+                if ($retries >= 3) return false;
+                if ($exception instanceof \GuzzleHttp\Exception\ConnectException) return true;
                 return false;
             },
             function ($retries) {
-                // Exponential backoff delay (100ms, 200ms, 400ms) between retries
                 return 100 * pow(2, $retries);
             }
         ));
 
-        Log::info("Base url: {$this->baseUrl}");
-
-        // Initialize the Guzzle client with the handler, base URI, default headers, and timeout.
         $this->client = new Client([
-            'handler'  => $handlerStack, // Inject the retry logic here
+            'handler'  => $handlerStack,
             'base_uri' => $this->baseUrl,
             'headers' => [
                 'Content-Type' => 'application/json',
-                'Accept' => 'application/json',
+                'Accept'       => 'application/json',
+                // 2. YOU MUST ADD THIS HEADER SO CLOUDFLARE ACCEPTS THE REQUEST
+                'Host'         => 'api.pkfare.com',
             ],
-            'timeout' => 75, // 75 seconds timeout for long-running flight searches
-
-            // FORCE GUZZLE TO BYPASS YOUR HOST'S DNS FOR PKFARE
-            // 'curl' => [
-            //     CURLOPT_RESOLVE => [
-            //         '://pkfare.com:104.18.14.224',
-            //         '://pkfare.com:104.18.15.224'
-            //     ]
-            // ]
+            'timeout' => 75,
+            // 3. Disable SSL verification temporary if your curl version complains about IP mismatch
+            'verify' => false,
         ]);
     }
+
 
 
     /**
