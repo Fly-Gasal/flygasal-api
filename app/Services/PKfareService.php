@@ -81,6 +81,8 @@ class PKfareService
             }
         ));
 
+        Log::info("Base url: {$this->baseUrl}");
+
         // Initialize the Guzzle client with the handler, base URI, default headers, and timeout.
         $this->client = new Client([
             'handler'  => $handlerStack, // Inject the retry logic here
@@ -92,12 +94,12 @@ class PKfareService
             'timeout' => 75, // 75 seconds timeout for long-running flight searches
 
             // FORCE GUZZLE TO BYPASS YOUR HOST'S DNS FOR PKFARE
-            'curl' => [
-                CURLOPT_RESOLVE => [
-                    '://pkfare.com:104.18.14.224',
-                    '://pkfare.com:104.18.15.224'
-                ]
-            ]
+            // 'curl' => [
+            //     CURLOPT_RESOLVE => [
+            //         '://pkfare.com:104.18.14.224',
+            //         '://pkfare.com:104.18.15.224'
+            //     ]
+            // ]
         ]);
     }
 
