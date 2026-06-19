@@ -43,9 +43,8 @@ class PKfareService
      */
     public function __construct()
     {
-        // 1. FORCE THE IP ADDRESS DIRECTLY AS THE BASE URL
-        // We use Cloudflare's IP for api.pkfare.com directly
-        $this->baseUrl = 'https://104.18.14.224';
+        // 1. Revert to the clean domain URL so SSL handshake works perfectly
+        $this->baseUrl = 'https://pkfare.com';
 
         $this->apiKey = config('app.pkfare_api_key', '');
         $this->apiSecret = config('app.pkfare_api_secret', '');
@@ -73,14 +72,20 @@ class PKfareService
             'headers' => [
                 'Content-Type' => 'application/json',
                 'Accept'       => 'application/json',
-                // 2. YOU MUST ADD THIS HEADER SO CLOUDFLARE ACCEPTS THE REQUEST
-                'Host'         => 'api.pkfare.com',
             ],
             'timeout' => 75,
-            // 3. Disable SSL verification temporary if your curl version complains about IP mismatch
-            'verify' => false,
+
+            // 2. FORCE cURL to map the domain directly to Cloudflare's IPs
+            // This satisfies both the SSL validation and bypasses your broken DNS server
+            'curl' => [
+                CURLOPT_RESOLVE => [
+                    '://pkfare.com:104.18.14.224',
+                    '://pkfare.com:104.18.15.224'
+                ]
+            ]
         ]);
     }
+
 
 
 
