@@ -37,15 +37,13 @@ class PKfareService
 
     /**
      * Constructor.
-     * Initializes configuration and sets up the Guzzle HTTP client with automatic retry logic.
+     * Initializes configuration and sets up the Guzzle HTTP client.
      *
      * @throws InvalidArgumentException If API credentials are not set in the environment.
      */
     public function __construct()
     {
-        // 1. Revert to the clean domain URL so SSL handshake works perfectly
-        $this->baseUrl = 'https://pkfare.com';
-
+        $this->baseUrl = config('app.pkfare_api_base_url', 'https://api.pkfare.com');
         $this->apiKey = config('app.pkfare_api_key', '');
         $this->apiSecret = config('app.pkfare_api_secret', '');
 
@@ -54,40 +52,16 @@ class PKfareService
             throw new InvalidArgumentException('PKfare API keys are not configured.');
         }
 
-        $handlerStack = \GuzzleHttp\HandlerStack::create();
-        $handlerStack->push(\GuzzleHttp\Middleware::retry(
-            function ($retries, \GuzzleHttp\Psr7\Request $request, \GuzzleHttp\Psr7\Response $response = null, $exception = null) {
-                if ($retries >= 3) return false;
-                if ($exception instanceof \GuzzleHttp\Exception\ConnectException) return true;
-                return false;
-            },
-            function ($retries) {
-                return 100 * pow(2, $retries);
-            }
-        ));
-
+        // Initialize the Guzzle client with base URI, default headers, and timeout.
         $this->client = new Client([
-            'handler'  => $handlerStack,
             'base_uri' => $this->baseUrl,
             'headers' => [
                 'Content-Type' => 'application/json',
-                'Accept'       => 'application/json',
+                'Accept' => 'application/json',
             ],
-            'timeout' => 75,
-
-            // 2. FORCE cURL to map the domain directly to Cloudflare's IPs
-            // This satisfies both the SSL validation and bypasses your broken DNS server
-            'curl' => [
-                CURLOPT_RESOLVE => [
-                    '://pkfare.com:104.18.14.224',
-                    '://pkfare.com:104.18.15.224'
-                ]
-            ]
+            'timeout' => 75, // 75 seconds timeout for long-running flight searches
         ]);
     }
-
-
-
 
     /**
      * Generates the standard authentication payload required by PKfare.
