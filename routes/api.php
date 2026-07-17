@@ -10,12 +10,12 @@ use App\Http\Controllers\Api\Admin\{
 use App\Http\Controllers\Api\Auth\AuthController;
 use App\Http\Controllers\Api\{
     BookingController,
-    FlightController,
     PaymentGatewayController,
     ProfileController,
     TelegramAuthController,
     TransactionController
 };
+use App\Http\Controllers\Api\v2\FlightController;
 use App\Http\Controllers\{
     SettingsController,
     WebhookController

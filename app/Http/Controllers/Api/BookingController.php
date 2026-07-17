@@ -40,7 +40,7 @@ class BookingController extends Controller
     {
         $query = Booking::with('transactions')->latest();
 
-        // Only admins can see all bookings. Everyone else (agents, customers) only sees their own.
+        // Only admins can see all bookings.
         if (!$request->user()->hasRole('admin')) {
             $query->where('user_id', $request->user()->id);
         }
@@ -50,8 +50,28 @@ class BookingController extends Controller
             $query->where('user_id', $request->user()->id);
         }
 
-        // Reduced pagination chunk to avoid huge memory spikes, standard is 15-50.
-        $bookings = $query->paginate(50);
+        // Status filter
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+
+        // Full-text search across key booking fields
+        if ($request->filled('search')) {
+            $s = $request->search;
+            $query->where(function ($q) use ($s) {
+                $q->where('order_num', 'LIKE', "%{$s}%")
+                  ->orWhere('pnr', 'LIKE', "%{$s}%")
+                  ->orWhere('contact_name', 'LIKE', "%{$s}%")
+                  ->orWhere('contact_email', 'LIKE', "%{$s}%");
+            });
+        }
+
+        // Date-from filter
+        if ($request->filled('date_from')) {
+            $query->whereDate('created_at', '>=', $request->date_from);
+        }
+
+        $bookings = $query->paginate(20);
 
         return response()->json([
             'status'  => true,

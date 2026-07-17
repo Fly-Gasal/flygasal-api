@@ -28,9 +28,25 @@ class UserController extends Controller
         // $this->middleware('permission:manage-users');
     }
 
-    public function index()
+    public function index(Request $request)
     {
-        $users = User::with('roles')->latest()->paginate(10);
+        $query = User::with('roles')->latest();
+
+        if ($request->filled('search')) {
+            $s = $request->search;
+            $query->where(function ($q) use ($s) {
+                $q->where('name', 'LIKE', "%{$s}%")
+                  ->orWhere('email', 'LIKE', "%{$s}%")
+                  ->orWhere('phone_number', 'LIKE', "%{$s}%")
+                  ->orWhere('agency_name', 'LIKE', "%{$s}%");
+            });
+        }
+
+        if ($request->filled('role') && $request->role !== 'all') {
+            $query->whereHas('roles', fn ($r) => $r->where('name', $request->role));
+        }
+
+        $users = $query->paginate(15);
         return response()->json([
             'message' => 'Users retrieved successfully.',
             'data' => $users,

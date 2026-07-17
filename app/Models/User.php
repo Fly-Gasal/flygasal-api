@@ -64,6 +64,16 @@ class User extends Authenticatable
         'phone_verified_at' => 'datetime',
     ];
 
+    protected $appends = ['role'];
+
+    public function getRoleAttribute(): string
+    {
+        if ($this->relationLoaded('roles')) {
+            return $this->roles->first()?->name ?? 'user';
+        }
+        return $this->getRoleNames()->first() ?? 'user';
+    }
+
     public function bookings()
     {
         return $this->hasMany(Booking::class, 'user_id', 'id');

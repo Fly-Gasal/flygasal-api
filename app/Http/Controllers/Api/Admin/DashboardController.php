@@ -112,13 +112,17 @@ class DashboardController extends Controller
                 }
             }
 
+            $recentBookings = Booking::latest()
+                ->limit(8)
+                ->get(['id', 'order_num', 'pnr', 'status', 'payment_status', 'total_amount', 'currency', 'contact_name', 'contact_email', 'created_at']);
+
             return response()->json([
                 'status' => true,
                 'data' => [
                     'range'    => $range,
-                    'period'   => $period,        // "day" | "month"
-                    'labels'   => $labels,        // x-axis labels matching trends
-                    'currency' => 'USD',          // adjust if multi-currency
+                    'period'   => $period,
+                    'labels'   => $labels,
+                    'currency' => 'USD',
                     'totals'   => [
                         'users'     => $totalUsers,
                         'bookings'  => $bookingsInRange,
@@ -133,6 +137,7 @@ class DashboardController extends Controller
                         'unpaid'    => $trendUnpaid,
                         'revenue'   => $trendRevenue,
                     ],
+                    'recent_bookings' => $recentBookings,
                 ],
             ]);
         });
