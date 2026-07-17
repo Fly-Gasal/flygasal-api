@@ -52,7 +52,11 @@ class FlightController extends Controller
                 'returnDate'            => 'nullable|date_format:Y-m-d',
             ]);
 
-            $topLevelCabin = $validated['cabinType'] ?? '';
+            // Normalize cabin: TSX frontend sends IATA codes (Y/C/F/W), old JSX sends full words.
+            // PKFare search requires the full-word form; map single-letter codes here as a safety net.
+            $cabinCodeMap = ['Y' => 'Economy', 'C' => 'Business', 'F' => 'First', 'W' => 'PremiumEconomy'];
+            $rawCabin      = $validated['cabinType'] ?? '';
+            $topLevelCabin = $cabinCodeMap[$rawCabin] ?? $rawCabin;
 
             // Normalize flights (uppercase IATA codes; no per-leg cabinClass so
             // PKfareService falls back to $criteria['cabinClass'] for each outbound leg).
