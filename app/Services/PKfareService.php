@@ -237,6 +237,8 @@ class PKfareService
             ];
         }
 
+        Log::info('Sending flight search request to PKfare', ['payload' => $payload]);
+
         return $this->post('/json/shoppingV8', $payload);
     }
 

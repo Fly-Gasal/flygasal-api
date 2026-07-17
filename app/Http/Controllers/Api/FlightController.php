@@ -75,6 +75,7 @@ class FlightController extends Controller
 
             // 3. If no cache exists, fetch fresh data from API
             if (!$resp) {
+                Log::info('Flight search cache miss, calling PKfareService', ['criteria' => $criteria]);
                 $resp = $this->pkfareService->searchFlights($criteria);
 
                 // Catch API Errors immediately (DO NOT cache failed requests like Timeouts or Rate Limits)

@@ -110,13 +110,14 @@ class FlightController extends Controller
 
             $resp = Cache::get($cacheKey);
 
-            $resp = $this->pkfareService->searchFlights($criteria);
-
-            $errorResponse = $this->handlePkfareError($resp, 'search');
-            if ($errorResponse) return $errorResponse;
-
-            Cache::put($cacheKey, $resp, 600);
             if (!$resp) {
+                Log::info('v2 flight search cache miss, calling PKfareService', ['criteria' => $criteria]);
+                $resp = $this->pkfareService->searchFlights($criteria);
+
+                $errorResponse = $this->handlePkfareError($resp, 'search');
+                if ($errorResponse) return $errorResponse;
+
+                Cache::put($cacheKey, $resp, 600);
             }
 
             $data        = $resp['data'] ?? $resp;
