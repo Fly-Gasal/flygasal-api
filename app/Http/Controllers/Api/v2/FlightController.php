@@ -48,31 +48,65 @@ class FlightController extends Controller
                 'children'              => 'nullable|integer|min:0',
                 'infants'               => 'nullable|integer|min:0',
                 'cabinType'             => 'nullable|string',
+                // returnDate is accepted for backward compatibility (old JSX frontend sends it)
+                'returnDate'            => 'nullable|date_format:Y-m-d',
             ]);
 
             $topLevelCabin = $validated['cabinType'] ?? '';
 
-            // Normalize flights; per-flight cabinClass falls back to top-level cabinType
+            // Normalize flights (uppercase IATA codes; no per-leg cabinClass so
+            // PKfareService falls back to $criteria['cabinClass'] for each outbound leg).
             $flights = array_map(fn(array $f): array => [
                 'origin'      => strtoupper($f['origin']),
                 'destination' => strtoupper($f['destination']),
                 'depart'      => $f['depart'],
-                'cabinClass'  => $f['cabinClass'] ?? $topLevelCabin,
             ], $validated['flights']);
 
-            $criteria = [
-                'tripType'   => $validated['tripType'] ?? 'Oneway',
-                'flights'    => $flights,
-                'adults'     => (int)$validated['adults'],
-                'children'   => (int)($validated['children'] ?? 0),
-                'infants'    => (int)($validated['infants'] ?? 0),
-                'cabinClass' => $topLevelCabin,
-                // No returnDate — client sends return leg explicitly in flights[1]
-            ];
+            // Normalize to lowercase so "RoundTrip", "return", "Oneway", "MultiCity", etc.
+            // are all handled consistently regardless of which frontend sent the request.
+            $tripType    = strtolower($validated['tripType'] ?? 'oneway');
+            $isRoundTrip = \in_array($tripType, ['roundtrip', 'return'], true);
+
+            if ($isRoundTrip) {
+                // PKfareService auto-appends the return leg with cabinClass '' (intentional
+                // in v1 — PKFare rejects 'Y' on the return leg with P001). So we always
+                // send only the outbound leg in flights[] and pass returnDate separately.
+                //
+                // returnDate source priority:
+                //   1. flights[1].depart  (new TSX frontend sends both legs, no returnDate body)
+                //   2. validated returnDate (old JSX frontend sends 1 leg + returnDate body)
+                $outbound   = $flights[0];
+                $returnDate = (\count($flights) >= 2)
+                    ? $flights[1]['depart']
+                    : ($validated['returnDate'] ?? null);
+
+                $criteria = [
+                    'tripType'      => 'roundtrip',
+                    'flights'       => [$outbound],
+                    'origin'        => $outbound['origin'],
+                    'destination'   => $outbound['destination'],
+                    'departureDate' => $outbound['depart'],
+                    'returnDate'    => $returnDate,
+                    'adults'        => (int)$validated['adults'],
+                    'children'      => (int)($validated['children'] ?? 0),
+                    'infants'       => (int)($validated['infants'] ?? 0),
+                    'cabinClass'    => $topLevelCabin,
+                ];
+            } else {
+                // Oneway and MultiCity: all legs forwarded directly
+                $criteria = [
+                    'tripType'   => $tripType,  // 'oneway' or 'multicity'
+                    'flights'    => $flights,
+                    'adults'     => (int)$validated['adults'],
+                    'children'   => (int)($validated['children'] ?? 0),
+                    'infants'    => (int)($validated['infants'] ?? 0),
+                    'cabinClass' => $topLevelCabin,
+                ];
+            }
 
             $cacheKey = 'v2_flight_search_' . md5(json_encode($criteria));
 
-            Log::info('v2 flight search', ['tripType' => $criteria['tripType'], 'legs' => count($flights), 'key' => $cacheKey]);
+            Log::info('v2 flight search', ['tripType' => $criteria['tripType'], 'legs' => \count($flights), 'key' => $cacheKey]);
 
             $resp = Cache::get($cacheKey);
 
