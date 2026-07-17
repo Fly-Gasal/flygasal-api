@@ -42,7 +42,7 @@ class FlightController extends Controller
                 'flights'               => 'required|array|min:1',
                 'flights.*.origin'      => 'required|string|size:3',
                 'flights.*.destination' => 'required|string|size:3',
-                'flights.*.depart'      => 'required|date_format:Y-m-d|after_or_equal:today',
+                'flights.*.depart'      => 'required|date_format:Y-m-d',
                 'flights.*.cabinClass'  => 'nullable|string',
                 'adults'                => 'required|integer|min:1',
                 'children'              => 'nullable|integer|min:0',
