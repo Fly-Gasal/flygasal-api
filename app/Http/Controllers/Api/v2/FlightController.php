@@ -127,10 +127,15 @@ class FlightController extends Controller
             $data        = $resp['data'] ?? $resp;
             $shoppingKey = $data['shoppingKey'] ?? null;
 
-            // Cache raw PKFare solutions keyed by shoppingKey so precisePricing
-            // can reconstruct journeys without requiring the client to send them.
+            // Cache raw PKFare solutions + pax counts keyed by shoppingKey so
+            // precisePricing can reconstruct journeys and passenger counts.
             if ($shoppingKey) {
-                Cache::put("v2_shop_raw_{$shoppingKey}", $data['solutions'] ?? [], 600);
+                Cache::put("v2_shop_raw_{$shoppingKey}", [
+                    'solutions' => $data['solutions'] ?? [],
+                    'adults'    => (int)$validated['adults'],
+                    'children'  => (int)($validated['children'] ?? 0),
+                    'infants'   => (int)($validated['infants'] ?? 0),
+                ], 600);
             }
 
             $offers = MapOffer::normalize($data);
@@ -160,19 +165,64 @@ class FlightController extends Controller
         try {
             $validated = $request->validate([
                 'offerId'      => 'nullable|string',
-                'shoppingKey'  => 'required|string',
-                'solutionKey'  => 'required|string',
+                'shoppingKey'  => 'nullable|string',
+                'solutionKey'  => 'nullable|string',
                 'coherenceKey' => 'nullable|string',
                 'solutionId'   => 'nullable|string',
+                'adults'       => 'nullable|integer|min:1',
+                'children'     => 'nullable|integer|min:0',
+                'infants'      => 'nullable|integer|min:0',
+                'journeys'     => 'nullable|array',
+                'cabinType'    => 'nullable|string',
+                'tag'          => 'nullable|string',
             ]);
 
-            $shoppingKey = $validated['shoppingKey'];
-            $solutionKey = $validated['solutionKey'];
+            $shoppingKey     = $validated['shoppingKey'] ?? null;
+            $solutionKey     = $validated['solutionKey'] ?? null;
+            $requestJourneys = $validated['journeys'] ?? null;
 
-            // Retrieve raw PKFare solutions from the search cache
-            $cachedSolutions = Cache::get("v2_shop_raw_{$shoppingKey}", []);
+            $journeys = [];
+            $adults   = (int)($validated['adults']   ?? 1);
+            $children = (int)($validated['children'] ?? 0);
+            $infants  = (int)($validated['infants']  ?? 0);
 
-            if (empty($cachedSolutions)) {
+            // Prefer request journeys first — the frontend reconstructs these from the normalized
+            // offer's leg segments and they already contain airline, flightNum, dates, times, etc.
+            // The PKFare cache stores journey_0 as arrays of flight IDs (not segment objects), so
+            // reading from cache directly would produce empty-field segments and cause P002.
+            if (!empty($requestJourneys)) {
+                $journeys = $requestJourneys;
+            } elseif ($shoppingKey) {
+                // No journeys in request — try to reconstruct from cached raw PKFare response.
+                // NOTE: journey_N keys in PKFare solutions contain flight IDs, not segment objects.
+                // This path is kept for forward-compat but will only work when the cached payload
+                // happens to include pre-formatted segment arrays (e.g. a custom cache format).
+                $cached = Cache::get("v2_shop_raw_{$shoppingKey}", []);
+                $cachedSolutions = isset($cached['solutions']) ? $cached['solutions'] : $cached;
+
+                if (!empty($cachedSolutions) && $solutionKey) {
+                    $solution = null;
+                    foreach ($cachedSolutions as $sol) {
+                        if (($sol['solutionKey'] ?? null) === $solutionKey) {
+                            $solution = $sol;
+                            break;
+                        }
+                    }
+
+                    if ($solution) {
+                        $idx = 0;
+                        while (array_key_exists("journey_{$idx}", $solution)) {
+                            $journeys[] = $solution["journey_{$idx}"];
+                            $idx++;
+                        }
+                        if (empty($journeys)) {
+                            $journeys = $solution['journeys'] ?? [];
+                        }
+                    }
+                }
+            }
+
+            if (empty($journeys)) {
                 return response()->json([
                     'success' => false,
                     'code'    => 'CACHE_EXPIRED',
@@ -180,29 +230,12 @@ class FlightController extends Controller
                 ], 400);
             }
 
-            // Find the specific solution by its key
-            $solution = null;
-            foreach ($cachedSolutions as $sol) {
-                if (($sol['solutionKey'] ?? null) === $solutionKey) {
-                    $solution = $sol;
-                    break;
-                }
-            }
-
-            if (!$solution) {
-                return response()->json([
-                    'success' => false,
-                    'code'    => 'SOLUTION_NOT_FOUND',
-                    'message' => 'The selected flight is no longer available. Please search again.',
-                ], 400);
-            }
-
             $criteria = [
-                'solutionKey' => $solutionKey,
-                'journeys'    => $solution['journeys'] ?? [],
-                'adults'      => (int)($solution['adults'] ?? 1),
-                'children'    => (int)($solution['children'] ?? 0),
-                'infants'     => (int)($solution['infants'] ?? 0),
+                'solutionKey' => $solutionKey ?? '',
+                'journeys'    => $journeys,
+                'adults'      => $adults,
+                'children'    => $children,
+                'infants'     => $infants,
             ];
 
             $cacheKey = 'v2_precise_pricing_' . md5(json_encode($criteria));
@@ -252,9 +285,13 @@ class FlightController extends Controller
             $shoppingKey = $validated['shoppingKey'];
             $solutionKey = $validated['solutionKey'];
 
-            $cachedSolutions = Cache::get("v2_shop_raw_{$shoppingKey}", []);
+            $cached2 = Cache::get("v2_shop_raw_{$shoppingKey}", []);
+            $cachedSolutions2 = isset($cached2['solutions']) ? $cached2['solutions'] : $cached2;
+            $cachedAdults2    = (int)($cached2['adults']   ?? 1);
+            $cachedChildren2  = (int)($cached2['children'] ?? 0);
+            $cachedInfants2   = (int)($cached2['infants']  ?? 0);
 
-            if (empty($cachedSolutions)) {
+            if (empty($cachedSolutions2)) {
                 return response()->json([
                     'success' => false,
                     'code'    => 'CACHE_EXPIRED',
@@ -263,7 +300,7 @@ class FlightController extends Controller
             }
 
             $solution = null;
-            foreach ($cachedSolutions as $sol) {
+            foreach ($cachedSolutions2 as $sol) {
                 if (($sol['solutionKey'] ?? null) === $solutionKey) {
                     $solution = $sol;
                     break;
@@ -278,13 +315,23 @@ class FlightController extends Controller
                 ], 400);
             }
 
+            $journeys2 = [];
+            $idx2 = 0;
+            while (array_key_exists("journey_{$idx2}", $solution)) {
+                $journeys2[] = $solution["journey_{$idx2}"];
+                $idx2++;
+            }
+            if (empty($journeys2)) {
+                $journeys2 = $solution['journeys'] ?? [];
+            }
+
             $criteria = [
                 'solutionId'  => $validated['solutionId'] ?? null,
                 'solutionKey' => $solutionKey,
-                'journeys'    => $solution['journeys'] ?? [],
-                'adults'      => (int)($validated['adults'] ?? $solution['adults'] ?? 1),
-                'children'    => (int)($validated['children'] ?? $solution['children'] ?? 0),
-                'infants'     => (int)($validated['infants'] ?? $solution['infants'] ?? 0),
+                'journeys'    => $journeys2,
+                'adults'      => (int)($validated['adults']   ?? $cachedAdults2),
+                'children'    => (int)($validated['children'] ?? $cachedChildren2),
+                'infants'     => (int)($validated['infants']  ?? $cachedInfants2),
             ];
 
             $cacheKey = 'v2_ancillary_' . md5(json_encode($criteria));

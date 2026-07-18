@@ -76,6 +76,63 @@ The platform focuses on a "World-Class" UI/UX, utilizing a clean **Bento Grid** 
 <!-- | *Place your confirmation page screenshot here* | *Place your wallet modal screenshot here* | -->
 | **Digital Ticket UI** | **Top-up & Deduction Flow** |
 
+## 🔗 Flight Search URL Format
+
+The new TSX frontend (`flygasal/`) uses a path-based URL scheme for flight searches. The legacy JSX frontend (`flygasal-client/`) used query strings.
+
+### TSX URL Format (path-based)
+
+**One-way:**
+```
+/flights/{origin}-{destination}/{YYYY-MM-DD}/{cabin}/{adults}-{children}-{infants}
+```
+Example:
+```
+/flights/NBO-MBA/2026-08-24/economy/1-0-0
+```
+
+**Return (round-trip):**
+```
+/flights/{origin}-{stopover}-{destination}/{outDate}_{retDate}/{cabin}/{pax}
+```
+Example:
+```
+/flights/NBO-MBA-NBO/2026-08-24_2026-08-28/economy/2-1-0
+```
+
+**Multi-city:**
+```
+/flights/multi/{route1}-{route2}/.../{date1}_{date2}/.../{cabin}/{pax}
+```
+
+**Segment encoding:**
+| Segment | Values |
+|---|---|
+| `{origin}-{destination}` | 3-letter IATA codes |
+| `{YYYY-MM-DD}` | ISO date |
+| `{cabin}` | `economy`, `business`, `first`, `premiumeconomy` |
+| `{adults}-{children}-{infants}` | Passenger counts, all integers |
+
+### Legacy JSX URL Format (query string)
+
+```
+/flight/availability?tripType=oneway
+  &flightType=Economy
+  &flights[0][origin]=NBO
+  &flights[0][destination]=MBA
+  &flights[0][depart]=2026-08-24
+  &adults=1&children=0&infants=0
+```
+
+### How search context flows to BookingDetail
+
+1. The search URL encodes all parameters (origin, destination, date, cabin, pax).
+2. When a user selects an itinerary, `selectItinerary` serializes the normalized offer as JSON into `?offer=...` and also appends `adults`, `children`, `infants` as explicit query params.
+3. `BookingDetail` reads the offer from `?offer=` and uses `rawOffer.passengers` (set by `MapOffer`) for pax counts, falling back to the explicit URL params.
+4. The backend v2 controller (`Api/v2/FlightController::precisePricing`) receives the journeys reconstructed from `rawOffer.summary.legs` — the frontend always sends these so the backend never needs to look them up from cache.
+
+---
+
 ## 🚀 Getting Started
 
 ### Prerequisites
