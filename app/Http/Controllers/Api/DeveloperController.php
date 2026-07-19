@@ -43,14 +43,12 @@ class DeveloperController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $currentId = $request->user()->currentAccessToken()?->id;
-
         $keys = $request->user()
             ->tokens()
             ->where('name', 'LIKE', self::TOKEN_TYPE . ':%')
             ->orderByDesc('created_at')
             ->get()
-            ->map(fn ($t) => $this->formatToken($t, $currentId));
+            ->map(fn ($t) => $this->formatToken($t));
 
         return response()->json(['data' => $keys]);
     }
@@ -76,8 +74,8 @@ class DeveloperController extends Controller
 
         return response()->json([
             'message'     => 'API key created successfully.',
-            'plain_token' => $token->plainTextToken,
-            'key'         => $this->formatToken($token->accessToken, null),
+            'plain_token' => 'fgk_' . $token->plainTextToken,
+            'key'         => $this->formatToken($token->accessToken),
         ], 201);
     }
 
@@ -192,7 +190,7 @@ class DeveloperController extends Controller
 
     // ─── Private helpers ──────────────────────────────────────────────────────
 
-    private function formatToken(PersonalAccessToken $token, ?int $currentId): array
+    private function formatToken(PersonalAccessToken $token): array
     {
         $label = preg_replace('/^' . preg_quote(self::TOKEN_TYPE . ':', '/') . '/', '', $token->name);
 

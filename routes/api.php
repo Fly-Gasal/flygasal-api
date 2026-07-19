@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\Admin\{
+    ApiUserController,
     DashboardController,
     AirlineController,
     AirportController,
@@ -128,7 +129,7 @@ Route::middleware('auth:sanctum')->group(function () {
             'role'              => $user->getRoleNames()->first() ?? 'No role assigned',
             'booking_count'     => $user->bookings()->count() ?? 0,
         ]);
-    });
+    })->middleware('scope:profile:read');
 
     /*
     |----------------------------------------------------------------------
@@ -149,27 +150,27 @@ Route::middleware('auth:sanctum')->group(function () {
     | Flights
     |----------------------------------------------------------------------
     */
-    Route::post('/flights/search',          [FlightController::class, 'search']);
-    Route::post('/flights/precise-pricing', [FlightController::class, 'precisePricing']);
-    Route::post('/flights/ancillary-pricing', [FlightController::class, 'ancillaryPricing']);
+    Route::post('/flights/search',            [FlightController::class, 'search'])->middleware('scope:flights:search');
+    Route::post('/flights/precise-pricing',   [FlightController::class, 'precisePricing'])->middleware('scope:flights:pricing');
+    Route::post('/flights/ancillary-pricing', [FlightController::class, 'ancillaryPricing'])->middleware('scope:flights:pricing');
 
     /*
     |----------------------------------------------------------------------
     | Bookings
     |----------------------------------------------------------------------
     */
-    Route::get('/bookings',                     [BookingController::class, 'index']);
-    Route::post('/flights/bookings',            [BookingController::class, 'store']);
-    Route::get('/bookings/{booking}',           [BookingController::class, 'orderDetails']);
-    Route::post('/bookings/{booking}/cancel',   [BookingController::class, 'cancel']);
-    Route::post('/bookings/ticketing',          [BookingController::class, 'ticketOrder']);
+    Route::get('/bookings',                   [BookingController::class, 'index'])->middleware('scope:bookings:read');
+    Route::post('/flights/bookings',          [BookingController::class, 'store'])->middleware('scope:bookings:write');
+    Route::get('/bookings/{booking}',         [BookingController::class, 'orderDetails'])->middleware('scope:bookings:read');
+    Route::post('/bookings/ticketing',        [BookingController::class, 'ticketOrder'])->middleware('scope:bookings:write');
+    Route::post('/bookings/{booking}/cancel', [BookingController::class, 'cancel'])->middleware('scope:bookings:write');
 
     /*
     |----------------------------------------------------------------------
     | Transactions & Payments
     |----------------------------------------------------------------------
     */
-    Route::get('transactions',               [TransactionController::class, 'index']);
+    Route::get('transactions',               [TransactionController::class, 'index'])->middleware('scope:transactions:read');
     Route::post('transactions/add',          [TransactionController::class, 'store']);
     Route::post('transactions/pay',          [TransactionController::class, 'walletPay']);
     Route::post('transactions/approve',      [TransactionController::class, 'approveOrReject']);
@@ -180,7 +181,7 @@ Route::middleware('auth:sanctum')->group(function () {
     | Developer API Keys
     |----------------------------------------------------------------------
     */
-    Route::prefix('developer')->group(function () {
+    Route::prefix('developer')->middleware('session.only')->group(function () {
         // API key management
         Route::get('/keys',          [DeveloperController::class, 'index']);
         Route::post('/keys',         [DeveloperController::class, 'store']);
@@ -226,5 +227,13 @@ Route::middleware('auth:sanctum')->group(function () {
         // Roles & Permissions
         Route::apiResource('roles', RoleController::class);
         Route::get('permissions',       [RoleController::class, 'permissions']);
+
+        // External API Users
+        Route::get('/api-users',                          [ApiUserController::class, 'index']);
+        Route::post('/api-users',                         [ApiUserController::class, 'store']);
+        Route::put('/api-users/{apiUser}',                [ApiUserController::class, 'update']);
+        Route::post('/api-users/{apiUser}/regenerate-key',[ApiUserController::class, 'regenerateKey']);
+        Route::patch('/api-users/{apiUser}/toggle-active',[ApiUserController::class, 'toggleActive']);
+        Route::delete('/api-users/{apiUser}',             [ApiUserController::class, 'destroy']);
     });
 });

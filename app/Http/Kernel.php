@@ -70,5 +70,8 @@ class Kernel extends HttpKernel
         'guardian_password_reset' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
         // 'guardian_role' => \Arden28\Guardian\Http\Middleware\RoleMiddleware::class,
         // 'guardian_permission' => \Arden28\Guardian\Http\Middleware\PermissionMiddleware::class,
+        // API security
+        'scope'        => \App\Http\Middleware\RequireTokenScope::class,
+        'session.only' => \App\Http\Middleware\SessionOnly::class,
     ];
 }
