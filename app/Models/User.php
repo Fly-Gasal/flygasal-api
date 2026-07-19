@@ -6,6 +6,7 @@ namespace App\Models;
 
 use App\Models\Flights\Booking;
 use App\Models\Flights\Transaction;
+use App\Models\WebhookEndpoint;
 use Arden28\Guardian\Traits\GuardianUser;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -82,5 +83,10 @@ class User extends Authenticatable
     public function transactions(): HasMany
     {
         return $this->hasMany(Transaction::class);
+    }
+
+    public function webhookEndpoints(): HasMany
+    {
+        return $this->hasMany(WebhookEndpoint::class);
     }
 }

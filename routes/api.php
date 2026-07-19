@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\Admin\{
 use App\Http\Controllers\Api\Auth\AuthController;
 use App\Http\Controllers\Api\{
     BookingController,
+    DeveloperController,
     PaymentGatewayController,
     ProfileController,
     TelegramAuthController,
@@ -173,6 +174,25 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('transactions/pay',          [TransactionController::class, 'walletPay']);
     Route::post('transactions/approve',      [TransactionController::class, 'approveOrReject']);
     Route::post('payment_gateways',          [PaymentGatewayController::class, 'index']);
+
+    /*
+    |----------------------------------------------------------------------
+    | Developer API Keys
+    |----------------------------------------------------------------------
+    */
+    Route::prefix('developer')->group(function () {
+        // API key management
+        Route::get('/keys',          [DeveloperController::class, 'index']);
+        Route::post('/keys',         [DeveloperController::class, 'store']);
+        Route::delete('/keys/{id}',  [DeveloperController::class, 'destroy']);
+        Route::delete('/keys',       [DeveloperController::class, 'destroyAll']);
+
+        // Webhook endpoint management
+        Route::get('/webhooks',          [DeveloperController::class, 'listWebhooks']);
+        Route::post('/webhooks',         [DeveloperController::class, 'storeWebhook']);
+        Route::patch('/webhooks/{id}',   [DeveloperController::class, 'updateWebhook']);
+        Route::delete('/webhooks/{id}',  [DeveloperController::class, 'destroyWebhook']);
+    });
 
     /*
     |----------------------------------------------------------------------
