@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ApiUser;
 use App\Models\WebhookEndpoint;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -186,6 +187,71 @@ class DeveloperController extends Controller
         $endpoint->delete();
 
         return response()->json(['message' => 'Webhook endpoint deleted.']);
+    }
+
+    // ─── Agency API Access ────────────────────────────────────────────────────
+
+    /**
+     * Return the authenticated agency's linked api_users record (or null).
+     */
+    public function myAccess(Request $request): JsonResponse
+    {
+        $apiUser = ApiUser::where('user_id', $request->user()->id)->first();
+
+        if (!$apiUser) {
+            return response()->json(['data' => null]);
+        }
+
+        return response()->json(['data' => [
+            'id'             => $apiUser->id,
+            'status'         => $apiUser->status,
+            'plan'           => $apiUser->plan,
+            'api_key'        => $apiUser->status === 'active' ? $apiUser->api_key : null,
+            'requests_today' => $apiUser->requests_today,
+            'requests_limit' => $apiUser->requests_limit,
+            'is_active'      => $apiUser->is_active,
+            'use_case'       => $apiUser->use_case,
+            'last_used_at'   => $apiUser->last_used_at?->toIso8601String(),
+            'created_at'     => $apiUser->created_at->toIso8601String(),
+        ]]);
+    }
+
+    /**
+     * Submit an API access request on behalf of the authenticated agency.
+     * Creates a pending api_users record linked to their account.
+     */
+    public function requestAccess(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if (ApiUser::where('user_id', $user->id)->exists()) {
+            return response()->json([
+                'message' => 'You already have an API access request on file.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'use_case' => 'required|string|min:20|max:1000',
+        ]);
+
+        $apiUser = ApiUser::create([
+            'user_id'        => $user->id,
+            'name'           => $user->agency_name ?? $user->name,
+            'email'          => $user->email,
+            'plan'           => 'free',
+            'api_key'        => null,
+            'status'         => 'pending',
+            'use_case'       => $validated['use_case'],
+            'requests_limit' => ApiUser::PLAN_LIMITS['free'],
+        ]);
+
+        return response()->json(['data' => [
+            'id'         => $apiUser->id,
+            'status'     => $apiUser->status,
+            'plan'       => $apiUser->plan,
+            'use_case'   => $apiUser->use_case,
+            'created_at' => $apiUser->created_at->toIso8601String(),
+        ]], 201);
     }
 
     // ─── Private helpers ──────────────────────────────────────────────────────

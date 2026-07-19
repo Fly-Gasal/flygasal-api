@@ -182,7 +182,11 @@ Route::middleware('auth:sanctum')->group(function () {
     |----------------------------------------------------------------------
     */
     Route::prefix('developer')->middleware('session.only')->group(function () {
-        // API key management
+        // Agency API access (view own credentials & submit request)
+        Route::get('/access',          [DeveloperController::class, 'myAccess']);
+        Route::post('/access/request', [DeveloperController::class, 'requestAccess']);
+
+        // Agency-owned Sanctum API keys (self-service, legacy)
         Route::get('/keys',          [DeveloperController::class, 'index']);
         Route::post('/keys',         [DeveloperController::class, 'store']);
         Route::delete('/keys/{id}',  [DeveloperController::class, 'destroy']);
@@ -232,6 +236,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/api-users',                          [ApiUserController::class, 'index']);
         Route::post('/api-users',                         [ApiUserController::class, 'store']);
         Route::put('/api-users/{apiUser}',                [ApiUserController::class, 'update']);
+        Route::post('/api-users/{apiUser}/approve',       [ApiUserController::class, 'approve']);
         Route::post('/api-users/{apiUser}/regenerate-key',[ApiUserController::class, 'regenerateKey']);
         Route::patch('/api-users/{apiUser}/toggle-active',[ApiUserController::class, 'toggleActive']);
         Route::delete('/api-users/{apiUser}',             [ApiUserController::class, 'destroy']);

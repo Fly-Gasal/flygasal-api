@@ -3,14 +3,18 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class ApiUser extends Model
 {
     protected $fillable = [
+        'user_id',
         'name',
         'email',
         'api_key',
         'plan',
+        'status',
+        'use_case',
         'requests_today',
         'requests_limit',
         'is_active',
@@ -29,6 +33,11 @@ class ApiUser extends Model
         'pro'        => 100_000,
         'enterprise' => 1_000_000,
     ];
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
 
     /** Generate a fresh API key with the fgk_ prefix. */
     public static function generateKey(): string
