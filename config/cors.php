@@ -19,14 +19,9 @@ return [
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => [
-        'http://localhost:5173', 
-        'https://flygasal.vercel.app', 
-        'https://flygasal.net',
-        'https://www.flygasal.net'
-    ],
+    'allowed_origins' => ['*'],
 
-    'allowed_origins_patterns' => ['#^https?://.*\.flygasal\.net$#'],
+    'allowed_origins_patterns' => [],
 
     'allowed_headers' => ['*'],
 
