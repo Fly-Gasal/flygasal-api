@@ -122,7 +122,13 @@ class AuthController extends Controller
                 'errors'  => $e->errors(),
             ], 422);
         } catch (\Throwable $e) {
-            Log::error('User login failed: ' . $e->getMessage(), ['exception' => $e]);
+            Log::error('User login failed: ' . $e->getMessage(), [
+                'email'     => $request->input('email'),
+                'exception' => $e::class,
+                'file'      => $e->getFile() . ':' . $e->getLine(),
+                'trace'     => $e->getTraceAsString(),
+            ]);
+
             return response()->json([
                 'message' => 'Failed to log in. Please try again later.',
             ], 500);
