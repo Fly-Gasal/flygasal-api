@@ -71,8 +71,10 @@ return new class extends Migration
             $clauses = ["MODIFY `id` {$target->COLUMN_TYPE} NOT NULL AUTO_INCREMENT"];
 
             if (strtoupper($target->COLUMN_KEY ?? '') !== 'PRI') {
+                // UNIQUE, never a plain index: Eloquent looks rows up by id,
+                // so a duplicate would silently resolve to the wrong record.
                 $clauses[] = $this->tableHasPrimaryKey($database, $table)
-                    ? "ADD INDEX `{$table}_id_index` (`id`)"
+                    ? "ADD UNIQUE INDEX `{$table}_id_unique` (`id`)"
                     : 'ADD PRIMARY KEY (`id`)';
             }
 

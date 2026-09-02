@@ -65,10 +65,13 @@ return new class extends Migration
             [DB::getDatabaseName(), self::TABLE, 'PRIMARY KEY']
         );
 
-        // Claim the primary key when the table has none; otherwise a plain
+        // Claim the primary key when the table has none; otherwise a UNIQUE
         // index satisfies MySQL's "must be defined as a key" requirement.
+        // It must be UNIQUE, not a plain index: Sanctum resolves tokens with
+        // find($id), so a duplicate id would return the wrong row and every
+        // authenticated request would 401.
         DB::statement($hasPrimaryKey
-            ? "ALTER TABLE {$table} MODIFY `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, ADD INDEX `pat_id_index` (`id`)"
+            ? "ALTER TABLE {$table} MODIFY `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, ADD UNIQUE INDEX `pat_id_unique` (`id`)"
             : "ALTER TABLE {$table} MODIFY `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, ADD PRIMARY KEY (`id`)");
     }
 

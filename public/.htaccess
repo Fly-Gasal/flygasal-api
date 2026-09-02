@@ -1,3 +1,22 @@
+# Pass the Authorization header through to PHP.
+#
+# Production runs nginx -> Apache -> PHP-FPM via mod_proxy_fcgi, which withholds
+# the Authorization header from the FastCGI backend unless told otherwise. Without
+# this, Sanctum sees no bearer token and every authenticated request 401s, while
+# unauthenticated routes such as /api/login keep working — so the symptom looks
+# like a broken session rather than a server config problem.
+#
+# The mod_rewrite E=HTTP_AUTHORIZATION rule below is the older workaround and does
+# not survive this particular chain; SetEnvIf is kept as a fallback for hosts
+# without CGIPassAuth (Apache < 2.4.13).
+<IfModule mod_proxy_fcgi.c>
+    CGIPassAuth On
+</IfModule>
+
+<IfModule mod_setenvif.c>
+    SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+</IfModule>
+
 <IfModule mod_rewrite.c>
     <IfModule mod_negotiation.c>
         Options -MultiViews -Indexes
