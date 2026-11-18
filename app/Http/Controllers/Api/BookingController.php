@@ -100,9 +100,13 @@ class BookingController extends Controller
                 'passengers.*.passportNumber' => 'nullable|string|max:255',
                 'passengers.*.passportExpiry' => 'nullable|date_format:Y-m-d|after_or_equal:today',
                 'passengers.*.nationality'    => 'nullable|string|size:2',
+                // PKFare needs each infant tied to an adult (1-based passenger position).
+                // Listed here because validated() drops any key without a rule.
+                'passengers.*.associatedPassengerIndex' => 'nullable|integer|min:1',
                 'contactName'  => 'required|string|max:155',
                 'contactEmail' => 'required|email|max:255',
                 'contactPhone' => 'required|string|max:20',
+                'contactTelCode' => ['nullable', 'string', 'max:6', 'regex:/^\+?\d{1,4}$/'],
                 'totalPrice'   => 'required|numeric|min:0',
                 'currency'     => 'required|string|size:3',
                 'agent_fee'    => 'nullable|numeric|min:0',
@@ -142,7 +146,10 @@ class BookingController extends Controller
                     'name'  => $validatedData['contactName'],
                     'email' => $validatedData['contactEmail'],
                     'phone' => $validatedData['contactPhone'],
-                ],
+                ] + (!empty($validatedData['contactTelCode'])
+                    // PKfareService falls back to +1 when this is missing.
+                    ? ['telCode' => '+' . ltrim($validatedData['contactTelCode'], '+')]
+                    : []),
             ];
 
             $pkfareResponse = (array) $this->pkfareService->createBooking($pkfareBookingDetails);
