@@ -17,6 +17,14 @@
     SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
 </IfModule>
 
+# Never serve log files. The host's PHP writes an error_log into whichever
+# directory a script ran from, including this public one, and the rewrite rules
+# below serve any real file as-is — so https://api.flygasal.net/error_log was
+# readable by anyone (server paths, stack traces, request data).
+<FilesMatch "(^error_log$|\.log$)">
+    Require all denied
+</FilesMatch>
+
 <IfModule mod_rewrite.c>
     <IfModule mod_negotiation.c>
         Options -MultiViews -Indexes
